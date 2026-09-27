@@ -1,0 +1,4 @@
+#!/bin/sh
+# ABOUTME: Cross ar shim: forwards to zig ar for the RK3188 build.
+# ABOUTME: ZIG must point at the pinned zig binary; the top-level Makefile exports it.
+exec "${ZIG:?ZIG unset: run through make, or export ZIG=\$(mise which zig)}" ar "$@"

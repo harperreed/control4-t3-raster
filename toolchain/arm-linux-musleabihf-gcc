@@ -1,0 +1,15 @@
+#!/bin/sh
+# ABOUTME: Cross C compiler shim: zig cc targeting the RK3188 (Cortex-A9, musl, hard-float).
+# ABOUTME: ZIG must point at the pinned zig binary; the top-level Makefile exports it.
+
+# zig 0.16's linker rejects -Wl,--warn-common, -Wl,-Map,<file> and -Wl,--verbose
+# ("unsupported linker arg"). BusyBox's scripts/trylink passes all three on its final
+# link, only to write a link map and extra diagnostics, so drop them.
+for arg do
+  shift
+  case "$arg" in
+    -Wl,--warn-common|-Wl,-Map,*|-Wl,--verbose) ;;
+    *) set -- "$@" "$arg" ;;
+  esac
+done
+exec "${ZIG:?ZIG unset: run through make, or export ZIG=\$(mise which zig)}" cc -target arm-linux-musleabihf -mcpu=cortex_a9 "$@"
