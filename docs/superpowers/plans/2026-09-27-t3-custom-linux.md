@@ -4,7 +4,8 @@
 - Step: probe boot.img built on branch m0-probe-image (make check green, reviewed); awaiting flash go-ahead
 - Next: M0 recovery proof (flash a custom boot.img, then restore the verified stock boot). Needs Doctor Biz's go-ahead for the first device write
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
-- Open: go-ahead for the first boot write? Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
+- Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
+- Open: Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
 - Approved: "a + c" (2026-09-27): dashboard + control panel content, now served by the server side of SPEC.md
 - Approved: "i figired out a much better solution" + pasted SPEC.md (2026-09-27): tt7d dumb network display supersedes the Smashing/rooted-Android kiosk
