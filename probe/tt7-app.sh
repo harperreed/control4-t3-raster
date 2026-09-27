@@ -59,6 +59,14 @@ if [ ! -e "$out/discovery.done" ]; then
     echo "tt7-app: discovery finished"
 fi
 
+# Wi-Fi, once scripts/wifi-setup.sh has put a config on the panel. In the
+# background: the pattern and input logging must never wait on association
+# or DHCP. It logs to /data/tt7/wifi.log and is safe to re-run on a respawn.
+if [ -f /data/tt7/wifi/wpa_supplicant.conf ]; then
+    echo "tt7-app: starting Wi-Fi (log /data/tt7/wifi.log)"
+    tt7-wifi-start &
+fi
+
 wait "$probe"
 echo "tt7-app: tt7probe exited ($?); init respawns this app in 5 s"
 sleep 5
