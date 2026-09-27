@@ -37,3 +37,12 @@
 - So `backup/tt7-stock-2026-09-27/` is **not a byte-exact image** of the large partitions. `boot` (12 MiB) re-read identical once. Nothing else has been verified.
 - Hypothesis (UNVERIFIED): weak Hynix MLC pages that need read-retry/ECC handling, which the kernel FTL does but the rockusb loader doesn't. Android boots and runs fine, which fits this.
 - **Rule: never flash a whole partition image made from a loader dump.** A corrupted read would get written back permanently. Write only the pages you changed, after checking they read back stable.
+
+## Probe image build (2026-09-27)
+- `make` builds `build/tt7-probe-boot.img`; `make check` is the canonical check. Nothing in either touches USB.
+- **zig 0.16 rejects `-Wl,--warn-common`, `-Wl,-Map,<file>` and `-Wl,--verbose`**, which BusyBox's `scripts/trylink` passes on its final link. `toolchain/arm-linux-musleabihf-cc` drops those three.
+- **zig cc links in Debug mode (unstripped, with debug info) when the link line has no `-O`.** Dropbear's link line has none, so pass `LDFLAGS="-Os -s"`. Neither `zig objcopy --strip-all` nor host binutils `strip` handles static ARM ELF.
+- zig's musl defines `__USE_TIME_BITS64`, so `struct input_event` is 16 bytes on ARM, matching the 3.0.36 kernel. `tt7probe.c` asserts it.
+- The NAND module init insmods (`/lib/modules/rk30xxnand_ko.ko`) comes from the **stock boot ramdisk** (`rk30xxnand_ko.ko.3.0.36+`). The build copies it into `build/` only.
+- Dock Ethernet is most likely an **RTL8152B USB NIC**: `r8152` is built into the stock kernel, and stock init.rc runs `rtl8152_mac`. Which USB controller it hangs off is unknown. MMKeypad's init forces the OTG port into device mode, which would cut the NIC if it sits on OTG.
+- Never `cat` every attribute under `/sys/devices/platform/usb20_otg`. The stock kernel has the Synopsys `wr_reg_test` attribute, whose read handler writes a register in a loop, going by the Synopsys driver source (not checked in the glassedge source).

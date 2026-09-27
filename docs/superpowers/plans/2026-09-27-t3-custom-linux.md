@@ -46,3 +46,4 @@ Architecture per those files: `boot.img` = stock kernel + our gzipped cpio ramdi
 ## Log
 - 2026-09-27: Stock `boot` dump verified byte-exact (embedded Rockchip SHA1 id matches). Large-partition loader dumps are NOT reliable (gotchas.md). Plan: take a clean full dump from our own Linux through the kernel mtd driver once it boots.
 - 2026-09-27: Loader mode on TT7 = hold volume-up + plug micro-USB (confirmed). Partition map matches in-wall. Ubuntu rkdeveloptool reads in bytes (see gotchas.md).
+- 2026-09-27: Built `build/tt7-probe-boot.img` on branch `m0-probe-image` (stock kernel + MMKeypad init + BusyBox + Dropbear + tt7probe). `make check` green. `scripts/flash-boot.sh` written, not run. Nothing written to the device.
