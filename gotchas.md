@@ -1,0 +1,39 @@
+# Gotchas
+
+## Control4 panel on USB (2026-09-27)
+- The panel shows up as `2207:0000` "rockchip rk3188" (serial 000fff811af4) while booted normally into the Control4 UI.
+- In that state it only exposes USB mass storage with 2 LUNs (sdb/sdc), both "Media removed", 0 bytes. It exposes no ADB interface.
+- The WCH `27c0:0859` "TouchScreen" on bus 1 is a separate device, not the panel.
+- A web search (XDA, Control4 docs, c4forums) turned up no public ADB/root method for Control4 T3 panels. Control4's T3 "Upgrade Guide" only covers wall boxes.
+- Loader/maskrom mode should show a different PID (RK3188 maskrom is `2207:310b`, per rkflashtool; verify at implementation).
+- Control4's install guides say the in-wall T3 has a RESET pinhole plus an unlabeled pinhole left of the mic. Holding the unlabeled one while pressing RESET, until an icon appears, does a **factory data reset** (wipes the panel). On the tabletop, volume up plays the role of the unlabeled pinhole. That key is probably the Rockchip recovery key. Whether holding it with USB attached gets loader mode is unverified.
+
+## C4-TT7 tabletop specifics
+- Has a battery. Undocked, the reset or power button turns it off; docked, they reboot it. To abort a recovery-mode attempt: undock, then hold power.
+- Community claims (Reddit r/C4diy thread 1uwrzra, which Doctor Biz pasted in a summary; UNVERIFIED because Reddit blocks our fetches): tabletop has a micro-USB recovery port like the in-wall; stock OS is Android 4.4.2; someone ran a custom Linux userspace + LVGL UI on the stock kernel; Control4 GPL kernel source is called "glassedge" (web search found nothing); tabletop and in-wall differ by a board-ID strap, so don't cross-flash images.
+
+## Research access
+- Reddit blocks WebFetch, curl, and headless agent-browser Chrome. Headless Chrome gets "blocked by network security", and old.reddit redirects to login. A headed browser can't run from Claude's shell because it has no DISPLAY. To read r/C4diy threads, a human has to paste them for now.
+- agent-browser Chrome on this box needs `--args "--no-sandbox"` (AppArmor userns restriction). Only use it together with `--allowed-domains`.
+
+## Prior art: github.com/nuvoxel/MMKeypad (read 2026-09-27, commit c95555d)
+- Written by darksoldier360, the Reddit dev. Covers the full T3 jailbreak plus a custom Linux (LVGL) firmware. Every procedure in it was proven on **in-wall** 7"/10" units, none on the tabletop. Key docs: `reference/t3-control4/{README,JAILBREAK,FACTORY-IMAGE,UNIT-INVENTORY}.md`, `firmware-linux-t3/`.
+- Loader mode: hold the unlabeled RECOVERY button while plugging in micro-USB (or powering on). The device then shows `2207:310b` and stays in loader mode. This is separate from Control4's factory-reset combo (recovery + RESET). Tabletop: Control4 swaps volume-up in for the unlabeled button, so volume-up is probably the recovery key (inferred, not tested). The tabletop has a battery, so power it fully off first.
+- Tools: `rkdeveloptool` (`ld`, `rfi`, `rl <start> <count> <file>` at about 16 MB/s). Partition LBAs are in their README, e.g. system `0x200000 @ 0x744000`, boot `0x6000 @ 0xa000`.
+- Security: `/system` ext4 has no dm-verity. `boot` has only a CRC check (no RSA key fused), so a repacked boot.img (stock kernel + own initramfs) boots.
+- Their gotcha: identify a boot image by its gunzipped ramdisk, never by filename. A "boot.orig" dumped after a custom flash is not stock.
+- Kernel tag for our model: `glassedge7p` = C4-TS-PORTABLE7.
+
+## Loader mode on the C4-TT7: CONFIRMED 2026-09-27
+- **Volume-up is the recovery key on the tabletop.** Power the panel fully off (undock, hold power), then hold volume-up and plug in the micro-USB. It comes up as `2207:310b` Loader. lsusb calls it "Mask ROM mode"; rkdeveloptool says Loader.
+- The TT7's partition map (mtdparts) is identical to the in-wall map in the MMKeypad docs. NAND: Hynix, 8528 MB, 17465344 sectors.
+- **Ubuntu's `rkdeveloptool` is the pine64 fork, and its read takes BYTES:** `rkdeveloptool read <start-sector> <num-bytes> <file>`. MMKeypad's `rl <start> <count>` counts sectors, so multiply its lengths by 512. The long command names (`read`, `list`, `read-flash-info`) replace `rl`/`ld`/`rfi`.
+- The Debian udev rule leaves out 2207:310b. We added `/etc/udev/rules.d/61-rk3188-loader.rules` (GROUP=plugdev, uaccess). Without it you get "creating comm object failed".
+- `scripts/backup-flash.sh <label>` makes a full read-only dump into `backup/<label>/` (git-ignored).
+
+## ⚠️ Loader-mode NAND reads are NOT reliable on our TT7 (found 2026-09-27)
+- Three full reads of `system` (1 GiB) disagreed on **258 × 16 KiB pages (4 MiB), all in ext4 blocks marked in use**. The bad regions are whole 16 KiB pages (the NAND page size), aligned to page boundaries.
+- Read size doesn't matter: a bad page (system page 104) gives **15 different versions in 15 single-page reads**, each 54–90 bits off the bitwise majority. Other pages differ by about 50% of their bits between reads. Some pages that were bad in one bulk read were stable in five later reads.
+- So `backup/tt7-stock-2026-09-27/` is **not a byte-exact image** of the large partitions. `boot` (12 MiB) re-read identical once. Nothing else has been verified.
+- Hypothesis (UNVERIFIED): weak Hynix MLC pages that need read-retry/ECC handling, which the kernel FTL does but the rockusb loader doesn't. Android boots and runs fine, which fits this.
+- **Rule: never flash a whole partition image made from a loader dump.** A corrupted read would get written back permanently. Write only the pages you changed, after checking they read back stable.
