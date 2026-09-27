@@ -23,7 +23,9 @@ done
 [[ -n "$iface" ]] || { echo "no TT7 USB network interface (want USB 2207:0003). Is the panel booted and on micro-USB?" >&2; exit 1; }
 
 if nmcli -t -f NAME con show | grep -qx tt7-usb; then
-  nmcli con modify tt7-usb connection.interface-name "$iface"
+  # Modifying a profile needs privileges; only do it when the interface name actually changed.
+  current=$(nmcli -g connection.interface-name con show tt7-usb)
+  [[ "$current" == "$iface" ]] || nmcli con modify tt7-usb connection.interface-name "$iface"
 else
   nmcli con add type ethernet con-name tt7-usb ifname "$iface" \
     ipv4.method manual ipv4.addresses 10.55.0.2/24 ipv4.never-default yes \
