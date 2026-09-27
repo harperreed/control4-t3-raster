@@ -1,9 +1,9 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: M0, full read-only NAND backup of the TT7 (`scripts/backup-flash.sh tt7-stock-2026-09-27`), running
-- Next: M1, build MMKeypad's Linux boot.img from our unit's own kernel and flash `boot` only
-- Open: none
+- Step: BLOCKED. Loader-mode NAND reads are unstable (gotchas.md), so the backup is not byte-exact
+- Next (proposed, awaiting Doctor Biz): pivot to Smashing + rooted stock Android kiosk; root via a surgical page-level write of build.prop only, never a whole-partition flash
+- Open: approve the surgical root write? Where will the Smashing server live?
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
 - Approved: "a + c" (2026-09-27): M2 = home dashboard (clock, weather, calendar, Home Assistant entities) + control panel (buttons that fire webhooks/scripts)
 - Compactions: 0
