@@ -53,3 +53,11 @@
 - Wi-Fi config: `scripts/wifi-setup.sh` (env file precedence: `--env`, then `$TT7_WIFI_ENV`, then `~/.config/tt7/wifi.env`) writes `/data/tt7/wifi/wpa_supplicant.conf`. At boot `tt7-app` runs `tt7-wifi-start` in the background, which logs to `/data/tt7/wifi.log`.
 - nl80211 vs wext: stock Android 4.4 on this unit runs its own wpa_supplicant with `-Dnl80211` on wlan0 (init.connectivity.rc), and the stock kernel has cfg80211 plus its wext compat layer. If nl80211 fails, `wifi-setup.sh --driver wext` makes `-D wext` stick via `/data/tt7/wifi/driver`.
 - wpa_supplicant.conf quoting: a `"..."` value runs to the last quote and takes backslashes literally, but the comment stripper pairs quotes, so an embedded `"` can turn a later `#` into a comment. `wifi_conf.py` writes such SSIDs as hex and such passphrases as their derived PSK.
+
+## Running our probe image on the TT7 (2026-09-27)
+- Kernel tag at runtime is `#1-glassedge7p.2.0`, so the tabletop board ID is detected. fb0 = 800x1280 portrait RGB565 (stride 1600). Touch = Silead gslX680; buttons = rk29-keypad; Wi-Fi = OOB_RK903 (Broadcom).
+- **Wi-Fi works with `wpa_supplicant -D nl80211`** (2.10, static musl). `scripts/wifi-setup.sh --start` with `TT7_WIFI_ENV=~/wifi.env` pushes the config to `/data/tt7/wifi/` and gets a DHCP lease.
+- **The USB gadget resets** (instant disconnect + re-enumerate) mid-transfer and around dock events. After a reset the panel's rndis0 has no IP and the ttyGS0 shell is dead: init sets them once at boot only. Fix is in progress (watchdog in tt7-app).
+- The host-side RNDIS MAC changes every panel boot, so the host interface name changes too. NetworkManager then grabs it with a DHCP profile. Re-pointing `tt7-usb` needs sudo. The zero-config way in is IPv6 link-local: `ping -6 ff02::1%<if>`, then ssh to the fe80 address. Check the host key fingerprint first.
+- The panel's SSH host key persists on /data: SHA256:GRP2WC0aghQcweo+FpGu8oJnAopdTWTvayOWyxjjQZE
+- The `reset` pinhole needs a paperclip. A long press on power also reboots the panel under our firmware (Doctor Biz did this 2026-09-27).
