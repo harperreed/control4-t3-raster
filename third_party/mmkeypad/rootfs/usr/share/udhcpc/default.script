@@ -1,0 +1,21 @@
+#!/bin/sh
+# busybox udhcpc callback: applies/removes the DHCP lease. Without this,
+# udhcpc negotiates a lease but never configures the interface.
+[ -n "$1" ] || exit 1
+case "$1" in
+    deconfig)
+        /bin/busybox ifconfig "$interface" 0.0.0.0
+        ;;
+    bound|renew)
+        /bin/busybox ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}"
+        if [ -n "$router" ]; then
+            /bin/busybox route del default gw 0.0.0.0 dev "$interface" 2>/dev/null
+            for r in $router; do
+                /bin/busybox route add default gw "$r" dev "$interface"
+            done
+        fi
+        : > /etc/resolv.conf
+        for d in $dns; do echo "nameserver $d" >> /etc/resolv.conf; done
+        ;;
+esac
+exit 0

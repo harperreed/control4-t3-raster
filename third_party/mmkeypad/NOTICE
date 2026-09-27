@@ -1,0 +1,50 @@
+MMKeypad
+Copyright 2026 NuVoxel LLC
+
+This product includes software developed by NuVoxel LLC, licensed under the
+Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------
+Third-party code included in this repository
+--------------------------------------------------------------------------
+
+json.lua  (driver-agent/, driver-keypad/, driver-intercom/)
+  Based on rxi/json.lua — https://github.com/rxi/json.lua
+  Copyright (c) 2020 rxi. MIT License.
+
+firmware-linux-t3/init/font8x8_basic.h
+  8x8 monochrome bitmap fonts, Daniel Hepper <daniel@hepper.net>,
+  based on font8x8.h by Marcel Sondaar. Public Domain.
+
+firmware-linux-t3/sim/shared/lodepng.h
+  LodePNG, Copyright (c) 2005-2026 Lode Vandevenne. zlib License.
+
+--------------------------------------------------------------------------
+Third-party code fetched at build time (NOT redistributed here)
+--------------------------------------------------------------------------
+
+The build scripts download these; none of their sources or binaries are
+committed to this repository. Their own licenses govern the artifacts you
+produce, and some are copyleft — if you distribute a built T3 image you are
+distributing GPL/LGPL components and must meet those obligations.
+
+  ESP-IDF                    Apache-2.0     firmware-idf/
+  LVGL                       MIT            firmware-idf/, firmware-linux-t3/
+  ESP-IDF managed components various        firmware-idf/idf_component.yml
+  BusyBox                    GPL-2.0        firmware-linux-t3/tools/build-busybox.sh
+  Dropbear SSH               MIT-style      firmware-linux-t3/tools/
+  wpa_supplicant             BSD-3-Clause   firmware-linux-t3/tools/build-wpa.sh
+  libre / baresip (SIP)      BSD-3-Clause   firmware-linux-t3/tools/build-libre.sh
+  Zig (as the cross-compiler) MIT           firmware-linux-t3/toolchain/
+
+--------------------------------------------------------------------------
+Not included
+--------------------------------------------------------------------------
+
+The Control4 DriverWorks intercom proxy templates (intercom_proxy/*.lua) are
+Copyright Control4 Corporation and are NOT distributed here. See
+driver-intercom/README.md.
+
+Control4, Composer, DriverWorks, and Navigator are trademarks of their
+respective owners. This project is not affiliated with, endorsed by, or
+supported by Control4, Snap One, or Resideo.
