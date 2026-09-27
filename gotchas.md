@@ -47,3 +47,9 @@
 - Dock Ethernet is most likely an **RTL8152B USB NIC**: `r8152` is built into the stock kernel, and stock init.rc runs `rtl8152_mac`. Which USB controller it hangs off is unknown. MMKeypad's init forces the OTG port into device mode, which would cut the NIC if it sits on OTG.
 - Never `cat` every attribute under `/sys/devices/platform/usb20_otg`. The stock kernel has the Synopsys `wr_reg_test` attribute, whose read handler writes a register in a loop, going by the Synopsys driver source (not checked in the glassedge source).
 - rkdeveloptool (pine64 17823e9) `write <begin-sector> <file>` writes the whole file from that sector (main.cpp WL/WRITE handler, read 2026-09-27). It has no usage string, and running it without args prints "Parameter of [WL] command is invalid".
+
+## Wi-Fi (2026-09-27)
+- `make clean` keeps `build/known_hosts` (the panel's pinned host key) and `build/flash-*/` (read-backs from real flashes). It used to be `rm -rf build`.
+- Wi-Fi config: `scripts/wifi-setup.sh` (env file precedence: `--env`, then `$TT7_WIFI_ENV`, then `~/.config/tt7/wifi.env`) writes `/data/tt7/wifi/wpa_supplicant.conf`. At boot `tt7-app` runs `tt7-wifi-start` in the background, which logs to `/data/tt7/wifi.log`.
+- nl80211 vs wext: stock Android 4.4 on this unit runs its own wpa_supplicant with `-Dnl80211` on wlan0 (init.connectivity.rc), and the stock kernel has cfg80211 plus its wext compat layer. If nl80211 fails, `wifi-setup.sh --driver wext` makes `-D wext` stick via `/data/tt7/wifi/driver`.
+- wpa_supplicant.conf quoting: a `"..."` value runs to the last quote and takes backslashes literally, but the comment stripper pairs quotes, so an embedded `"` can turn a later `#` into a comment. `wifi_conf.py` writes such SSIDs as hex and such passphrases as their derived PSK.

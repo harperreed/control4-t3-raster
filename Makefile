@@ -26,19 +26,24 @@ CROSS_CC     := arm-linux-musleabihf-cc
 CROSS_CFLAGS := -std=c11 -D_GNU_SOURCE -static -Os -Wall -Wextra -Werror
 HOST_CFLAGS  := -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined
 
-.PHONY: all image busybox dropbear test-host check clean
+.PHONY: all image busybox dropbear wifi test-host check clean
 .DELETE_ON_ERROR:
 
 all: image
 image: $(IMAGE)
 busybox: $(B)/busybox/busybox
 dropbear: $(B)/dropbear/dropbearmulti
+# Also usable alone: copy build/wifi/* to /data/tt7/bin on a running panel.
+wifi: $(B)/wifi/wpa_supplicant
 
 $(B)/busybox/busybox: config/busybox.config scripts/build-busybox.sh scripts/fetch-sources.sh
 	scripts/build-busybox.sh
 
 $(B)/dropbear/dropbearmulti: config/dropbear-localoptions.h scripts/build-dropbear.sh scripts/fetch-sources.sh
 	scripts/build-dropbear.sh
+
+$(B)/wifi/wpa_supplicant: scripts/build-wpa.sh scripts/fetch-sources.sh
+	scripts/build-wpa.sh
 
 $(B)/init: third_party/mmkeypad/init/init.c
 	@mkdir -p $(B)
@@ -57,7 +62,8 @@ $(B)/stock/kernel.img: $(STOCK_BOOT) scripts/bootimg.py $(MKBOOTIMG)
 	cd $(B)/stock/ramdisk && gzip -dc ../ramdisk.cpio.gz | cpio -id --quiet 'rk30xxnand_ko.ko.3.0.36+'
 
 ROOTFS_INPUTS := $(B)/init $(B)/tt7probe $(B)/busybox/busybox $(B)/dropbear/dropbearmulti \
-                 $(B)/stock/kernel.img probe/tt7-app.sh probe/tt7-discover.sh \
+                 $(B)/wifi/wpa_supplicant $(B)/stock/kernel.img \
+                 probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh \
                  scripts/stage-rootfs.sh $(SSH_PUBKEY) $(shell find third_party/mmkeypad/rootfs -type f)
 
 $(B)/ramdisk.cpio.gz: $(ROOTFS_INPUTS) $(MKCPIO)
@@ -79,8 +85,9 @@ test-host: $(B)/host/test_fbdraw
 	$<
 
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
-                 scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh
-DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh
+                 scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \
+                 scripts/build-wpa.sh scripts/wifi-setup.sh scripts/test-wifi-setup.sh
+DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh
 # A system shellcheck if there is one, else the pinned PyPI build through uv.
 SHELLCHECK := $(shell command -v shellcheck 2>/dev/null || echo "uvx --from shellcheck-py==0.11.0.1 shellcheck")
 
@@ -90,7 +97,11 @@ check: test-host $(IMAGE)
 	@for s in $(DEVICE_SCRIPTS); do sh -n $$s || exit 1; done; echo "  ok   sh -n: $(DEVICE_SCRIPTS)"
 	@$(SHELLCHECK) $(SHELL_SCRIPTS) $(DEVICE_SCRIPTS) toolchain/* && echo "  ok   shellcheck"
 	scripts/flash-boot.sh --self-test
+	scripts/test-wifi-setup.sh
 	@echo "make check: all passed"
 
+# Keeps build/known_hosts (the panel's pinned host key) and build/flash-*/
+# (read-backs from real flashes); everything else under build/ is regenerated.
 clean:
-	rm -rf $(B)
+	@mkdir -p $(B)
+	find $(B) -mindepth 1 -maxdepth 1 ! -name known_hosts ! -name 'flash-*' -exec rm -rf {} +
