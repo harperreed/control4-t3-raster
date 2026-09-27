@@ -1,11 +1,12 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: BLOCKED. Loader-mode NAND reads are unstable (gotchas.md), so the backup is not byte-exact
-- Next (proposed, awaiting Doctor Biz): pivot to Smashing + rooted stock Android kiosk; root via a surgical page-level write of build.prop only, never a whole-partition flash
-- Open: single-page build.prop write proposed; Doctor Biz answered "Not yet" (2026-09-27). Where will the Smashing server live?
+- Step: SPEC.md (tt7d, server-rendered network display) adopted; plan milestones now follow SPEC §49
+- Next: M0 recovery proof (flash a custom boot.img, then restore the verified stock boot). Needs Doctor Biz's go-ahead for the first device write
+- Open: go-ahead for the first boot write? Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
-- Approved: "a + c" (2026-09-27): M2 = home dashboard (clock, weather, calendar, Home Assistant entities) + control panel (buttons that fire webhooks/scripts)
+- Approved: "a + c" (2026-09-27): dashboard + control panel content, now served by the server side of SPEC.md
+- Approved: "i figired out a much better solution" + pasted SPEC.md (2026-09-27): tt7d dumb network display supersedes the Smashing/rooted-Android kiosk
 - Compactions: 0
 
 ## Goal
@@ -42,4 +43,5 @@ Architecture per those files: `boot.img` = stock kernel + our gzipped cpio ramdi
 - Dev loop: `sim/` headless renderer on the PC → scp the binary to `/data` → restart the app.
 
 ## Log
+- 2026-09-27: Stock `boot` dump verified byte-exact (embedded Rockchip SHA1 id matches). Large-partition loader dumps are NOT reliable (gotchas.md). Plan: take a clean full dump from our own Linux through the kernel mtd driver once it boots.
 - 2026-09-27: Loader mode on TT7 = hold volume-up + plug micro-USB (confirmed). Partition map matches in-wall. Ubuntu rkdeveloptool reads in bytes (see gotchas.md).
