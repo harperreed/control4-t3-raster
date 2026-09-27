@@ -23,6 +23,30 @@ same jobs for a Linux host and our layout; `scripts/build-busybox.sh` takes its
 per-file awk `-O0` fix from upstream's `build-busybox.sh`. Upstream's `MMK_DEV=1`
 developer key is never used: the image carries only the owner's own key.
 
+## Ported, not copied: `tools/build-wpa.sh` -> `scripts/build-wpa.sh`
+
+Upstream's `tools/build-wpa.sh` (same commit) is not vendored; our
+`scripts/build-wpa.sh` reimplements it for our layout. Kept from upstream: the
+recipe (wpa_supplicant 2.10 + wpa_cli, static, nl80211 through libnl-tiny,
+internal TLS/crypto, no OpenSSL), the exact wpa `.config` (`DRIVER_NL80211`,
+`LIBNL_TINY`, `CTRL_IFACE`, `BACKEND=file`, `TLS=internal`,
+`INTERNAL_LIBTOMMATH`, `IEEE80211W`), and the `EXTRA_CFLAGS` warning
+relaxations. Upstream reports this recipe working end to end on an in-wall T3
+(AP6330/BCM4330, `rkwifi.oob.ko`, `-D nl80211`, 2026-07-16). Changed:
+
+- libnl-tiny was an unpinned `git clone --depth 1` of openwrt/libnl-tiny. It is
+  now pinned to commit `40493a655d8caa2ccf5206dde1e733abe2920432` and fetched as
+  a hash-checked codeload tarball; wpa_supplicant 2.10 is hash-checked too
+  (`scripts/fetch-sources.sh`).
+- libnl-tiny is compiled without `-D_GNU_SOURCE`: `unl.c` defines it itself,
+  and passing it again was the build's only warning.
+- It links with `LDFLAGS="-Os -s"` instead of running a separate strip step,
+  because zig links unstripped in Debug mode when the link line has no `-O`.
+- It builds in a fresh `build/wpa/` every time and installs to `build/wifi/`.
+
+Upstream's app drove Wi-Fi from C (`platform/wifi_linux.c`, not copied). Ours
+is `probe/tt7-wifi-start.sh`, run by `tt7-app` and by `scripts/wifi-setup.sh`.
+
 ## Changes to upstream code
 
 Only `init/init.c` changed. Every other file here is byte-identical to upstream
