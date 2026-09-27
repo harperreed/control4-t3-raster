@@ -1,8 +1,8 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: probe boot.img built on branch m0-probe-image (make check green, reviewed); awaiting flash go-ahead
-- Next: M0 recovery proof (flash a custom boot.img, then restore the verified stock boot). Needs Doctor Biz's go-ahead for the first device write
+- Step: probe image flashed and running (boot #2); Wi-Fi up at 192.168.23.197 via standalone wpa_supplicant. Subagent building USB-reset watchdog + `flash-boot.sh --net`
+- Next: (1) Doctor Biz's go-ahead to flash the new image over Wi-Fi; (2) resumable kernel-side full dump (scripts/dump-via-ssh.sh) once the panel is docked/charging
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
 - Open: Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
@@ -45,6 +45,7 @@ Architecture per those files: `boot.img` = stock kernel + our gzipped cpio ramdi
 - Dev loop: `sim/` headless renderer on the PC → scp the binary to `/data` → restart the app.
 
 ## Log
+- 2026-09-27: Probe image booted on TT7 (glassedge7p, fb 800x1280 RGB565, gslX680 touch). USB gadget resets killed the first kernel dump; Wi-Fi (nl80211) works. Kernel-side reads: misc/boot/recovery/backup stable, `kernel` mtd1 differed between two reads (to investigate).
 - 2026-09-27: Stock `boot` dump verified byte-exact (embedded Rockchip SHA1 id matches). Large-partition loader dumps are NOT reliable (gotchas.md). Plan: take a clean full dump from our own Linux through the kernel mtd driver once it boots.
 - 2026-09-27: Loader mode on TT7 = hold volume-up + plug micro-USB (confirmed). Partition map matches in-wall. Ubuntu rkdeveloptool reads in bytes (see gotchas.md).
 - 2026-09-27: Built `build/tt7-probe-boot.img` on branch `m0-probe-image` (stock kernel + MMKeypad init + BusyBox + Dropbear + tt7probe). `make check` green. `scripts/flash-boot.sh` written, not run. Nothing written to the device.
