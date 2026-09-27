@@ -1,8 +1,8 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: probe image flashed and running (boot #2); Wi-Fi up at 192.168.23.197 via standalone wpa_supplicant. Subagent building USB-reset watchdog + `flash-boot.sh --net`
-- Next: (1) Doctor Biz's go-ahead to flash the new image over Wi-Fi; (2) resumable kernel-side full dump (scripts/dump-via-ssh.sh) once the panel is docked/charging
+- Step: M0 kernel-side full dump over Wi-Fi running (scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27)
+- Next: M0 wrap-up (compare kernel dump vs loader dump, docs/hardware-inventory.md, recovery doc); then tt7d M1/M2 (PNG frame over HTTP)
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
 - Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
@@ -46,6 +46,7 @@ Architecture per those files: `boot.img` = stock kernel + our gzipped cpio ramdi
 - Dev loop: `sim/` headless renderer on the PC → scp the binary to `/data` → restart the app.
 
 ## Log
+- 2026-09-27: Watchdog+Wi-Fi image (5812654f…) flashed over Wi-Fi and booted; auto-joins Wi-Fi. `reboot -f` takes ~5 min.
 - 2026-09-27: Probe image booted on TT7 (glassedge7p, fb 800x1280 RGB565, gslX680 touch). USB gadget resets killed the first kernel dump; Wi-Fi (nl80211) works. Kernel-side reads: misc/boot/recovery/backup stable, `kernel` mtd1 differed between two reads (to investigate).
 - 2026-09-27: Stock `boot` dump verified byte-exact (embedded Rockchip SHA1 id matches). Large-partition loader dumps are NOT reliable (gotchas.md). Plan: take a clean full dump from our own Linux through the kernel mtd driver once it boots.
 - 2026-09-27: Loader mode on TT7 = hold volume-up + plug micro-USB (confirmed). Partition map matches in-wall. Ubuntu rkdeveloptool reads in bytes (see gotchas.md).
