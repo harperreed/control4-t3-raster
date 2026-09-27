@@ -60,4 +60,4 @@
 - **The USB gadget resets** (instant disconnect + re-enumerate) mid-transfer and around dock events. After a reset the panel's rndis0 has no IP and the ttyGS0 shell is dead: init sets them once at boot only. Fix is in progress (watchdog in tt7-app).
 - The host-side RNDIS MAC changes every panel boot, so the host interface name changes too. NetworkManager then grabs it with a DHCP profile. Re-pointing `tt7-usb` needs sudo. The zero-config way in is IPv6 link-local: `ping -6 ff02::1%<if>`, then ssh to the fe80 address. Check the host key fingerprint first.
 - The panel's SSH host key persists on /data: SHA256:GRP2WC0aghQcweo+FpGu8oJnAopdTWTvayOWyxjjQZE
-- The `reset` pinhole needs a paperclip. A long press on power also reboots the panel under our firmware (Doctor Biz did this 2026-09-27).
+- Rebooting under our firmware: Doctor Biz managed it 2026-09-27, but the method wasn't recorded (power long-press or reset pinhole: UNVERIFIED which). Plain USB replug does NOT reboot it: the battery keeps it running.
