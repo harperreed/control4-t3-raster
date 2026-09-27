@@ -46,3 +46,4 @@
 - The NAND module init insmods (`/lib/modules/rk30xxnand_ko.ko`) comes from the **stock boot ramdisk** (`rk30xxnand_ko.ko.3.0.36+`). The build copies it into `build/` only.
 - Dock Ethernet is most likely an **RTL8152B USB NIC**: `r8152` is built into the stock kernel, and stock init.rc runs `rtl8152_mac`. Which USB controller it hangs off is unknown. MMKeypad's init forces the OTG port into device mode, which would cut the NIC if it sits on OTG.
 - Never `cat` every attribute under `/sys/devices/platform/usb20_otg`. The stock kernel has the Synopsys `wr_reg_test` attribute, whose read handler writes a register in a loop, going by the Synopsys driver source (not checked in the glassedge source).
+- rkdeveloptool (pine64 17823e9) `write <begin-sector> <file>` writes the whole file from that sector (main.cpp WL/WRITE handler, read 2026-09-27). It has no usage string, and running it without args prints "Parameter of [WL] command is invalid".
