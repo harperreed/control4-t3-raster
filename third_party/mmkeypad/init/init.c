@@ -1,4 +1,7 @@
-/* Custom PID-1 init for the repurposed Control4 T3 (RK3188).
+/* ABOUTME: PID 1 of the TT7 probe boot image: mounts, networking, Dropbear, USB serial, app supervision.
+ * ABOUTME: From nuvoxel/MMKeypad c95555d (Apache-2.0); TT7 changes are listed in ../PROVENANCE.md.
+ *
+ * Custom PID-1 init for the repurposed Control4 T3 (RK3188).
  *
  * Replaces Android's /init entirely.
  *
@@ -11,7 +14,7 @@
  * exactly the silent early-death we hit on the first custom boots.
  *
  * Observability without UART or a working USB console: every step is logged
- * to /data/mmkinit-boot.log (opened+written+closed per line, so a later hang
+ * to BOOTLOG (/data/tt7/init-boot.log) (opened+written+closed per line, so a later hang
  * or crash still leaves a complete trail we can read after recovering to
  * stock), and to /dev/kmsg (readable via `dmesg` once SSH is up).
  *
@@ -41,7 +44,10 @@
 #include <time.h>
 #include <unistd.h>
 
-#define BOOTLOG "/data/mmkinit-boot.log"
+/* TT7: /data is the stock Android userdata partition, which we keep. Every
+ * file this init creates, renames or deletes there lives under TT7_DIR. */
+#define TT7_DIR "/data/tt7"
+#define BOOTLOG TT7_DIR "/init-boot.log"
 
 static int data_mounted = 0;
 
@@ -193,7 +199,7 @@ static pid_t spawn(char *const argv[]) {
  * inherited console (which is the hardware UART -- console=ttyFIQ0 -- and thus
  * invisible over SSH). The previous run's log is rotated to "<logpath>.prev" so
  * a crash's final output survives the respawn. Used for the app so its status
- * (audio_start, wifi, SIP, etc.) is readable with `cat /data/mmkeypad.log`. */
+ * (audio_start, wifi, SIP, etc.) is readable with `cat /data/tt7/app.log`. */
 static pid_t spawn_logged(char *const argv[], const char *logpath) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -524,7 +530,7 @@ static const char *wifi_module(void) {
  *     reachable, then execs the OTA overlay if one is installed and healthy;
  *     otherwise falls through to run the built-in worker itself.
  *   - OVERLAY ("overlay <dropbear_pid> <serial_pid>"): the SAME binary shipped to
- *     /data/init.overlay by OTA. The bootstrap execs it (it becomes PID 1); it
+ *     /data/tt7/init.overlay by OTA. The bootstrap execs it (it becomes PID 1); it
  *     skips the early bring-up (already done) and runs the worker.
  * The worker (wifi bring-up + app launch/respawn/OTA/rollback) is the evolving
  * part and thus lives past the exec, so init updates ride the same /data-overlay
@@ -532,9 +538,9 @@ static const char *wifi_module(void) {
  * bad init update can't brick: a crash (PID1 dies) panics+reboots, the bootstrap
  * runs again, and after INIT_TRIAL_MAX unconfirmed boots it quarantines the
  * overlay and runs the known-good built-in worker. */
-#define INIT_OVERLAY   "/data/init.overlay"
-#define INIT_OVERLAY_BAD "/data/init.overlay.bad"
-#define INIT_TRIAL     "/data/nvx/init.trial"
+#define INIT_OVERLAY   TT7_DIR "/init.overlay"
+#define INIT_OVERLAY_BAD TT7_DIR "/init.overlay.bad"
+#define INIT_TRIAL     TT7_DIR "/init.trial"
 #define INIT_TRIAL_MAX 3   /* unconfirmed overlay boots before rollback */
 #define INIT_CONFIRM_SEC 30 /* app healthy this long -> commit the overlay */
 
@@ -548,7 +554,7 @@ static int trial_read(void) {
     return atoi(b);
 }
 static void trial_write(int v) {
-    mkdir("/data/nvx", 0700);
+    mkdir(TT7_DIR, 0700);
     int fd = open(INIT_TRIAL, O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, 0600);
     if (fd < 0) return;
     char b[16];
@@ -851,20 +857,29 @@ int main(int argc, char **argv) {
     /* Mount /data (also makes logging durable). Non-fatal. */
     mkdir("/data", 0771);
     if (mount_mtd("userdata", "/data", 0) == 0) {
+        mkdir(TT7_DIR, 0700); /* before the first durable log line */
         data_mounted = 1;
         unlink(BOOTLOG);        /* fresh log each boot */
         log_flush_backlog();    /* everything logged before now -> durable, once */
         log_line("=== mmkeypad custom init boot log (backlog flushed above) ===");
         log_line("/data mounted, durable O_SYNC logging active");
+
+        /* TT7: keep Dropbear's host keys across boots. dropbear -R writes the
+         * keys it generates into /etc/dropbear (RAM); bind the persistent dir
+         * over it. The running server reads key files per connection, so it
+         * picks this up without a restart. */
+        mkdir(TT7_DIR "/dropbear", 0700);
+        if (mount(TT7_DIR "/dropbear", "/etc/dropbear", NULL, MS_BIND, NULL) == 0)
+            log_line("dropbear host keys: " TT7_DIR "/dropbear bound on /etc/dropbear");
+        else
+            log_line("dropbear host keys: bind FAILED, keys stay in RAM this boot");
     }
 
-    /* Remaining partitions (non-fatal). */
+    /* Remaining partitions (non-fatal). TT7: only /system, read-only. We
+     * leave cache and metadata unmounted: nothing here needs them, and a
+     * read-write ext4 mount writes to the partition. */
     mkdir("/system", 0755);
-    mkdir("/cache", 0770);
-    mkdir("/metadata", 0500);
     mount_mtd("system", "/system", MS_RDONLY);
-    mount_mtd("cache", "/cache", 0);
-    mount_mtd("metadata", "/metadata", 0);
     log_line("all partitions attempted, bring-up complete");
 
     /* Vendor graphics/media modules from the stock /system. /system ships a
@@ -932,13 +947,14 @@ int main(int argc, char **argv) {
     /* Launch the LVGL app (the whole point). Spawned, not exec'd, so init
      * stays PID 1 to reap dropbear/dhcp and respawn the app if it crashes.
      *
-     * OTA overlay: prefer the persistent /data/mmkeypad build (installed by the
+     * OTA overlay: prefer the persistent /data/tt7/app build (installed by the
      * app-overlay OTA) over the factory binary baked into this initramfs. If the
      * overlay crash-loops (dies faster than OTA_MIN_UPTIME, OTA_MAX_FAILS times
      * in a row) roll it back so the unit always recovers to a known-good build. */
-#define APP_OVERLAY "/data/mmkeypad"
-#define APP_FACTORY "/usr/bin/mmkeypad"
-#define APP_LOG     "/data/mmkeypad.log"
+#define APP_OVERLAY TT7_DIR "/app"
+#define APP_OVERLAY_BAD TT7_DIR "/app.bad"
+#define APP_FACTORY "/usr/bin/tt7-app"
+#define APP_LOG     TT7_DIR "/app.log"
 #define OTA_MIN_UPTIME 20 /* seconds a healthy run lasts at least */
 #define OTA_MAX_FAILS 3
     char *app_overlay[] = {APP_OVERLAY, NULL};
@@ -948,8 +964,8 @@ int main(int argc, char **argv) {
     int ota_fails = 0;
     time_t app_started = time(NULL);
     pid_t lvgl_pid = spawn_logged(app, APP_LOG);
-    log_line(use_overlay ? "mmkeypad launched (OTA overlay) -> /data/mmkeypad.log"
-                         : "mmkeypad launched (factory) -> /data/mmkeypad.log");
+    log_line(use_overlay ? "app launched (overlay " APP_OVERLAY ") -> " APP_LOG
+                         : "app launched (factory " APP_FACTORY ") -> " APP_LOG);
 
     /* Overlay-only: a one-shot timer. Reaping it (below) means the init overlay
      * reached this worker loop and survived INIT_CONFIRM_SEC -> commit it (reset
@@ -975,7 +991,7 @@ int main(int argc, char **argv) {
         } else if (died == lvgl_pid) {
             if (use_overlay && (time(NULL) - app_started) < OTA_MIN_UPTIME) {
                 if (++ota_fails >= OTA_MAX_FAILS) {
-                    rename(APP_OVERLAY, "/data/mmkeypad.bad"); /* quarantine */
+                    rename(APP_OVERLAY, APP_OVERLAY_BAD); /* quarantine */
                     log_line("OTA overlay crash-looped -> rolled back to factory");
                     use_overlay = 0;
                     app = app_factory;
