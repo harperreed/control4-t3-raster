@@ -187,6 +187,8 @@ def main():
                 r.check("ARM, EABI5" in desc and "relocatable" in desc, f"{name}: {desc}")
             else:
                 r.check("ARM, EABI5" in desc and "statically linked" in desc, f"{name}: {desc}")
+    init = entries.get("init", (0, 0, 0, b""))[3]
+    r.check(b"/data/tt7/usb-watchdog.log" in init, "init includes the USB link watchdog")
     ko = entries.get("lib/modules/rk30xxnand_ko.ko", (0, 0, 0, b""))[3]
     vermagic = re.search(rb"vermagic=(\S+)", ko)
     release = re.search(rb"Linux version (\S+)", stock["kernel"])

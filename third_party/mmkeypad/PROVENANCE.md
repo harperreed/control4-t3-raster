@@ -87,8 +87,28 @@ Only `init/init.c` changed. Every other file here is byte-identical to upstream
 6. **Factory app path is `/usr/bin/tt7-app`** (was `/usr/bin/mmkeypad`), our
    probe launcher. The app launch log line names the paths instead of "mmkeypad".
 
+7. **USB link watchdog (added after first boot on the TT7).** The gadget
+   resets (instant disconnect and re-enumerate) mid-transfer and around dock
+   events. Upstream's `usb_gadget_rndis()` gives rndis0/usb0 their address once
+   at boot, so after a reset the panel had no USB IP. Now the worker loop reaps
+   a 3 s `sleep` child as a tick (`usb_tick`). On each tick `usb_link_check`
+   re-applies 10.55.0.1/24 to any of rndis0/usb0 that exists without that
+   address or is down, and retries the ttyGS0 shell if none is running. It
+   never touches `/sys/class/android_usb` (re-running the gadget setup would
+   itself reset USB). Actions go to `/data/tt7/usb-watchdog.log` and kmsg; each
+   distinct message is logged at most once a minute, and the log rotates once at
+   256 KiB.
+8. **ttyGS0 shell respawn fixes** in `spawn_serial_console`:
+   - If `open("/dev/ttyGS0")` fails, the child now exits so PID 1 respawns it.
+     Upstream exec'd `sh -i` anyway on init's inherited fds (the UART console).
+     That shell never exits, so ttyGS0 was never respawned and stayed dead until
+     reboot.
+   - Every respawn after the first waits 2 s, so a port that hangs up at once
+     cannot make PID 1 fork in a tight loop.
+   - Respawns are logged to the rate-limited USB log, not the boot log.
+
 Everything else, including network and Dropbear bring-up order, the USB
-RNDIS+ACM gadget and root shell on `/dev/ttyGS0`, the NAND module insmod, the
+RNDIS+ACM gadget setup, the NAND module insmod, the
 vendor module loads, the Wi-Fi driver pick and the respawn loop, is upstream's
 code unchanged.
 
