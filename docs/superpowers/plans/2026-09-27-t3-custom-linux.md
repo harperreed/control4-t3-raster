@@ -5,6 +5,7 @@
 - Next: (1) Doctor Biz's go-ahead to flash the new image over Wi-Fi; (2) resumable kernel-side full dump (scripts/dump-via-ssh.sh) once the panel is docked/charging
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
+- Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
 - Open: Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
 - Approved: "a + c" (2026-09-27): dashboard + control panel content, now served by the server side of SPEC.md

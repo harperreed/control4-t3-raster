@@ -368,6 +368,7 @@ static void usb_gadget_rndis(void) {
  * mknod it ourselves. Returns the child pid (respawned by the main loop when the
  * host disconnects), or -1 if the ACM port never appeared. */
 static pid_t spawn_serial_console(void) {
+    static int respawn; /* 0 only for the first spawn at boot */
     char devs[32] = {0};
     int fd = open("/sys/class/tty/ttyGS0/dev", O_RDONLY);
     if (fd >= 0) {
@@ -381,24 +382,110 @@ static pid_t spawn_serial_console(void) {
         return -1;
     }
     make_node("/dev/ttyGS0", S_IFCHR | 0600, maj, min);
+    int delay = respawn;
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
+        /* TT7: a respawn follows a hangup (USB reset or host close). Pause so
+         * a port that hangs up at once cannot make PID 1 fork in a tight loop. */
+        if (delay) sleep(2);
         int t = open("/dev/ttyGS0", O_RDWR);
-        if (t >= 0) {
-            dup2(t, 0);
-            dup2(t, 1);
-            dup2(t, 2);
-            if (t > 2) close(t);
-            ioctl(0, TIOCSCTTY, 0);
-        }
+        /* TT7: if the port won't open (e.g. mid-reset), exit and let PID 1
+         * respawn us. Upstream exec'd the shell anyway on init's own fds (the
+         * UART console); that shell never exits, so ttyGS0 was never
+         * respawned and stayed dead until reboot. */
+        if (t < 0) _exit(1);
+        dup2(t, 0);
+        dup2(t, 1);
+        dup2(t, 2);
+        if (t > 2) close(t);
+        ioctl(0, TIOCSCTTY, 0);
         char *sh[] = {"/bin/busybox", "sh", "-i", NULL};
         execv(sh[0], sh);
         _exit(127);
     }
-    char m[128];
-    snprintf(m, sizeof(m), "serial console: root sh on /dev/ttyGS0 (%d:%d) — Mac: screen /dev/cu.usbmodem* 115200", maj, min);
-    log_line(m);
+    if (!respawn) { /* respawns go to the rate-limited USB log, not the boot log */
+        char m[128];
+        snprintf(m, sizeof(m), "serial console: root sh on /dev/ttyGS0 (%d:%d) — Mac: screen /dev/cu.usbmodem* 115200", maj, min);
+        log_line(m);
+    }
+    respawn = 1;
+    return pid;
+}
+
+/* ── TT7: USB link watchdog ──────────────────────────────────────────────────
+ * The gadget can reset (instant disconnect + re-enumerate) while we run.
+ * usb_gadget_rndis() gives rndis0/usb0 their address once, at boot, so a reset
+ * that drops it left the panel unreachable over USB. PID 1 reaps a
+ * USB_WATCH_SEC sleep child as a tick (no extra long-lived process, no busy
+ * loop) and on each tick re-applies USB_IP to any USB netdev that exists but
+ * lacks it or is down, and retries the ttyGS0 shell if none is running. It
+ * never touches android_usb: re-running the gadget setup would itself reset
+ * the link. Actions go to USB_WATCH_LOG, each distinct message at most once a
+ * minute, so a flapping link cannot wear the flash. */
+#define USB_IP "10.55.0.1"
+#define USB_WATCH_SEC 3
+#define USB_WATCH_LOG TT7_DIR "/usb-watchdog.log"
+#define USB_WATCH_LOG_MAX (256 * 1024) /* then rotated once to .old */
+
+static void usb_log(const char *msg) {
+    static char last[200];
+    static time_t last_sec = -1000;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (strcmp(msg, last) == 0 && now.tv_sec - last_sec < 60) return;
+    snprintf(last, sizeof(last), "%s", msg);
+    last_sec = now.tv_sec;
+    int fd = open("/dev/kmsg", O_WRONLY | O_NOCTTY);
+    if (fd >= 0) { dprintf(fd, "tt7-usb: %s\n", msg); close(fd); }
+    if (!data_mounted) return;
+    struct stat st;
+    if (stat(USB_WATCH_LOG, &st) == 0 && st.st_size > USB_WATCH_LOG_MAX)
+        rename(USB_WATCH_LOG, USB_WATCH_LOG ".old");
+    fd = open(USB_WATCH_LOG, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        dprintf(fd, "%ld.%03ld %s\n", (long)now.tv_sec, now.tv_nsec / 1000000, msg);
+        close(fd);
+    }
+}
+
+static int iface_up(const char *ifn) {
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) return 0;
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, IFNAMSIZ, "%s", ifn);
+    int up = ioctl(s, SIOCGIFFLAGS, &ifr) == 0 && (ifr.ifr_flags & IFF_UP);
+    close(s);
+    return up;
+}
+
+static void usb_link_check(void) {
+    static const char *ifs[] = {"rndis0", "usb0"};
+    for (unsigned i = 0; i < sizeof(ifs) / sizeof(ifs[0]); i++) {
+        char p[64], ip[32] = "";
+        snprintf(p, sizeof(p), "/sys/class/net/%s", ifs[i]);
+        if (access(p, F_OK) != 0) continue; /* not there (yet): nothing to fix */
+        int has = iface_ip(ifs[i], ip, sizeof(ip)) && strcmp(ip, USB_IP) == 0;
+        int up = iface_up(ifs[i]);
+        if (has && up) continue;
+        char *argv[] = {"/bin/busybox", "ifconfig", (char *)ifs[i], USB_IP,
+                        "netmask", "255.255.255.0", "up", NULL};
+        run(argv);
+        char m[160];
+        snprintf(m, sizeof(m), "%s: had %s, %s -> re-applied " USB_IP "/24 (%s)", ifs[i],
+                 ip[0] ? ip : "no IPv4", up ? "up" : "down",
+                 iface_ip(ifs[i], ip, sizeof(ip)) && strcmp(ip, USB_IP) == 0 ? "ok" : "STILL MISSING");
+        usb_log(m);
+    }
+}
+
+static pid_t usb_tick(void) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        sleep(USB_WATCH_SEC);
+        _exit(0);
+    }
     return pid;
 }
 
@@ -970,6 +1057,8 @@ int main(int argc, char **argv) {
     /* Overlay-only: a one-shot timer. Reaping it (below) means the init overlay
      * reached this worker loop and survived INIT_CONFIRM_SEC -> commit it (reset
      * the trial counter) so the bootstrap won't roll it back next boot. */
+    pid_t usb_tick_pid = usb_tick(); /* TT7: USB link watchdog tick */
+
     pid_t confirm_pid = -1;
     if (is_overlay) {
         confirm_pid = fork();
@@ -983,7 +1072,21 @@ int main(int argc, char **argv) {
             dropbear_pid = spawn(dropbear);
         } else if (serial_pid > 0 && died == serial_pid) {
             /* host closed the serial port -> offer a fresh shell for next open */
+            char m[96];
+            snprintf(m, sizeof(m), "ttyGS0 shell ended (%s %d), respawning",
+                     WIFSIGNALED(status) ? "signal" : "exit",
+                     WIFSIGNALED(status) ? WTERMSIG(status) : WEXITSTATUS(status));
+            usb_log(m);
             serial_pid = spawn_serial_console();
+        } else if (died == usb_tick_pid) {
+            usb_link_check();
+            /* No shell running (ttyGS0 was absent last time): try again once
+             * the ACM port exists, without logging "absent" every tick. */
+            if (serial_pid <= 0 && access("/sys/class/tty/ttyGS0/dev", F_OK) == 0) {
+                usb_log("ttyGS0 appeared, starting shell");
+                serial_pid = spawn_serial_console();
+            }
+            usb_tick_pid = usb_tick();
         } else if (confirm_pid > 0 && died == confirm_pid) {
             trial_write(0); /* init overlay proven healthy -> committed */
             log_line("init overlay confirmed healthy -> committed");
