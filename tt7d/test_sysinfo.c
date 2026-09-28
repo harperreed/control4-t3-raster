@@ -101,11 +101,28 @@ static void test_backlight(void) {
     CHECK(on == -1 && pct == -1, "unknown: on %d pct %d", on, pct);
 }
 
+static void test_values(void) {
+    struct sysinfo_values v;
+    sysinfo_read(FIXTURE, &v);
+    CHECK(v.has_battery && v.battery_percent == 82 && v.charging == 0 && v.external_power == 0,
+          "power: battery %d %d charging %d external %d", v.has_battery, v.battery_percent, v.charging,
+          v.external_power);
+    CHECK(v.has_backlight && v.backlight_max == 255 && v.brightness_percent == 50 && v.display_on == 1,
+          "backlight: %d max %d pct %d on %d", v.has_backlight, v.backlight_max, v.brightness_percent, v.display_on);
+    CHECK(v.has_wifi && !v.has_ethernet && !v.ethernet_ip[0], "network: wifi %d eth %d", v.has_wifi, v.has_ethernet);
+
+    sysinfo_read("/nonexistent-sysfs-root", &v);
+    CHECK(!v.has_battery && v.battery_percent == -1 && v.charging == -1 && v.external_power == -1 &&
+              !v.has_backlight && v.backlight_max == -1 && v.brightness_percent == -1 && !v.has_wifi,
+          "nothing present");
+}
+
 int main(void) {
     test_modalias();
     test_capabilities();
     test_power();
     test_network();
     test_backlight();
+    test_values();
     return test_finish("test_sysinfo");
 }

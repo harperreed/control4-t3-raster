@@ -84,3 +84,10 @@
 - CSS `display:` rules on a class beat the `hidden` attribute. The panel's CSS has `[hidden] { display: none !important; }` for this; without it the unlock form and a broken preview image stayed visible.
 - `GET /api/v1/logs` needs the token (SPEC §36: diagnostics are authenticated). The panel checks a pasted token against it before keeping the token.
 - The built-in test pattern is `tools/make-test-frame.py --stamp BUILT-IN` output embedded at build time, so builds stay reproducible. Without `--stamp` the PNG carries the current time.
+
+## tt7d MQTT (2026-09-27, branch tt7d-m5-mqtt; host-tested against amqtt only)
+- A broker replays retained messages to every new subscription with the retain flag set, but forwards live messages with it cleared (MQTT 3.1.1 §3.3.1.3). tt7d ignores `cmd/*` that arrive retained. Otherwise a retained `cmd/reboot` would reboot the panel on every reconnect.
+- amqtt 0.12.1 drops messages still queued in its delivery loop when a DISCONNECT (or EOF) arrives, so "publish offline, then DISCONNECT" loses the publish (broker.py `_client_message_loop`). tt7d waits, at most 2 s, for its own `offline` to come back before it sends DISCONNECT. Mosquitto has not been tried.
+- tt7d's MQTT `host` must be an IPv4 address: getaddrinfo() blocks, and the daemon has one poll() loop shared with the display.
+- The integration test uses amqtt as the broker and paho-mqtt as the client. Both are pinned in the Makefile and run with `uv run --no-project --with ...`. mosquitto is not installed, and installing it needs sudo.
+- Touch events stay off MQTT (owner decision, 2026-09-27): M3 sends them over a WebSocket. Only `event/button` has an MQTT hook.

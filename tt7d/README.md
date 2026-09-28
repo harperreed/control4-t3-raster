@@ -54,19 +54,25 @@ no libraries beyond musl and a vendored PNG decoder.
 | `device.json` | `{"device_id": "tt7-xxxxxx"}`, created once from `/dev/urandom` and never derived from the IP. A file that doesn't parse is left alone and the id is reported as `null` |
 | `last-frame.png` | The last frame sent with `X-Persist: true`, written with temp file, fsync and rename. Shown at startup |
 | `last-frame.id` | `<sha256> <frame id>` for that PNG, so a restored frame keeps its id |
+| `mqtt.conf` | MQTT settings, `KEY=VALUE` lines (see "MQTT (M5) and Home Assistant (M6)"). Written by `PUT /config/mqtt` |
+| `mqtt-password` | The broker password, first line, mode 0600. Never in `mqtt.conf`, the API, or the log |
+| `config-revision` | The `config_revision` counter (SPEC §35), bumped by every accepted `PUT /config/mqtt` |
+| `mqtt-ha-device` | The device id last announced to Home Assistant, so a changed device id gets its old entities removed |
 
 ## API (`/api/v1`)
 
-Reads need no auth, except `GET /logs`. `PUT /frame`, `GET /logs` and every
-control panel action need `Authorization: Bearer <token>` (`/info` lists them
-under `auth.required_for`).
+Reads need no auth, except `GET /logs` and `GET /config/mqtt`. `PUT /frame`,
+`GET /logs`, both `/config/mqtt` methods and every control panel action need
+`Authorization: Bearer <token>` (`/info` lists them under `auth.required_for`).
 `GET /frame/image` is also unauthenticated in v1: it returns the frame that is
 already visible on the glass. Revisit this when the panel shows anything private.
 
 | Endpoint | Returns |
 |---|---|
 | `GET /info` | `device_id`, `model`, `firmware_version`, `build`; `display` {`width`, `height`, `rotation`, `frame_formats`, `max_frame_bytes`, `native` {`width`, `height`, `format`, `stride`, `bits_per_pixel`}}; `capabilities` read from sysfs at request time; `auth` |
-| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`}, `power`, `network.interfaces`, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`} |
+| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`}, `power`, `network.interfaces`, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`} |
+| `GET /config/mqtt` | The MQTT settings in effect (see below). Needs the token |
+| `PUT /config/mqtt` | Body: a JSON object of MQTT settings. Needs the token and `Content-Type: application/json`; at most 4096 bytes |
 | `GET /frame` | Frame metadata: `frame_id`, `sha256`, `received_at`, `displayed_at`, `width`, `height`, `content_type`, `bytes`, `persisted`, `deduplicated`, `restored`. 404 `no_frame` before the first frame |
 | `GET /frame/image` | The PNG exactly as received (or as restored). 404 `no_frame` before the first frame |
 | `PUT /frame` | Body: a 1280×800 PNG. Headers: `Content-Type: image/png` (required), `X-Frame-ID` (1–128 printable ASCII, no spaces; generated as `tt7d-<24 hex>` if absent), `X-Frame-SHA256` (checked if present), `X-Persist: true\|false`. Replies 200 with the frame metadata |
@@ -116,6 +122,8 @@ Every error is JSON: `{"error": "<code>", "message": "...", ...}`.
 | 400 | `bad_request`, `invalid_frame_id`, `invalid_sha256`, `invalid_persist`, `invalid_brightness`, `invalid_lines` | |
 | 400 | `brightness_out_of_range` | `unit`, `min`, `max` |
 | 400 | `sha256_mismatch` | `header`, `computed` |
+| 400 | `invalid_config` (`PUT /config/mqtt`) | `field` (null for a syntax error) |
+| 409 | `set_by_flag`: that setting comes from a `--mqtt-*` flag | `field` |
 | 401 | `unauthorized` (and `WWW-Authenticate: Bearer`) | |
 | 404 | `not_found`, `no_frame` | |
 | 405 | `method_not_allowed` (and `Allow`) | |
@@ -126,7 +134,7 @@ Every error is JSON: `{"error": "<code>", "message": "...", ...}`.
 | 422 | `invalid_image` | `detail` (lodepng's reason) |
 | 422 | `invalid_dimensions` | `expected` [w, h], `received` [w, h] |
 | 431 | `headers_too_large` | |
-| 500 | `persist_failed` (nothing changed on screen), `internal_error`, `reboot_failed` | |
+| 500 | `persist_failed` (nothing changed on screen), `write_failed` (`PUT /config/mqtt`), `internal_error`, `reboot_failed` | |
 | 500 | `backlight_write_failed` | `device`, `detail` |
 | 503 | `no_backlight` | |
 | 505 | `http_version_not_supported` | |
@@ -172,8 +180,9 @@ script or style, or `localStorage` show up.
 
 ```sh
 make tt7d            # build/tt7d: static ARM EABI5 for the panel
-make test-host       # unit tests (render, json, http, util, sysinfo, control, hardware, assets) with ASan/UBSan
+make test-host       # unit tests (render, json, http, util, sysinfo, control, hardware, assets, mqtt) with ASan/UBSan
 make test-e2e        # the real daemon, host-built, on a file-backed fb (tt7d/test_e2e.py)
+make test-mqtt       # the real daemon against real amqtt brokers and a paho client (tt7d/test_mqtt_e2e.py)
 make check           # everything, including the boot image checks
 ```
 
@@ -190,8 +199,172 @@ build/host/tt7d --listen 127.0.0.1:8765 --fb-file /tmp/fb.raw --fb-geometry 800x
 TT7_TOKEN_FILE=/tmp/tt7d-data/token tools/push-frame.sh 127.0.0.1:8765 test-frame.png
 ```
 
-`tt7d --help` lists every flag. There is no config file in v1. SPEC §35's
-TOML needs a parser, which is out of scope, so tt7-app passes the flags.
+`tt7d --help` lists every flag. The display settings have no config file in
+v1 (SPEC §35's TOML needs a parser, which is out of scope), so tt7-app passes
+the flags. MQTT is the exception: it has `mqtt.conf`, because it has to change
+at runtime.
+
+## MQTT (M5) and Home Assistant (M6)
+
+### Design
+
+- **Client**: our own MQTT 3.1.1 client. `mqtt_packet.c` encodes and decodes
+  packets, and `mqtt_client.c` runs the connection. Nothing is vendored: the
+  small C clients we know of (paho.mqtt.embedded-c's MQTTClient, MQTT-C)
+  bring their own blocking socket calls or sync loop. The part we need is
+  small: CONNECT, PUBLISH at QoS 0, SUBSCRIBE, PING and DISCONNECT. The unit
+  tests check it byte for byte.
+- **Never blocks the display** (SPEC §41, §50.17). The socket is
+  non-blocking and sits in the same `poll()` as the HTTP server
+  (`server_handlers.poll_prepare/poll_service`). TCP connect has a 10 s
+  deadline, and so does CONNACK. A PINGREQ that gets no PINGRESP within half
+  the keepalive drops the link. Reconnects back off 1, 2, 4 … 60 s. Outgoing
+  packets wait in a 64 KiB queue. A publish that does not fit pushes out the
+  oldest queued publishes, and `/state` `mqtt.dropped` counts them. While
+  disconnected, publishes are dropped rather than queued; the state is
+  retained and goes out again on connect.
+- **Host names are not resolved**: `host` must be an IPv4 address.
+  `getaddrinfo()` blocks, and a slow DNS lookup in the one loop would freeze
+  the display.
+- **Clean session**, QoS 0 throughout. A QoS 1 PUBLISH from the broker gets
+  its PUBACK and is otherwise handled like QoS 0.
+- **Clean close**: before a DISCONNECT, tt7d subscribes to its own
+  availability topic, publishes `offline`, and waits (at most 2 s) to see it
+  come back. amqtt 0.12.1 drops messages that are still queued when a
+  DISCONNECT arrives, and this makes sure the broker handled everything first.
+- **Logging**: connects, and only the first failure in a run of failures,
+  because the log is on flash. The password is never logged.
+
+### Settings
+
+Sources, highest first: `--mqtt-KEY VALUE` flags, then `<data-dir>/mqtt.conf`,
+then the defaults. `PUT /api/v1/config/mqtt` edits `mqtt.conf`. It refuses a
+setting that a flag overrides (409 `set_by_flag`), since the flag would win
+again at the next start. tt7-app passes no `--mqtt-*` flags, so on the panel
+`mqtt.conf` is the source.
+
+| Key (`mqtt.conf`, JSON, `--mqtt-` flag with `-` for `_`) | Default | Rule |
+|---|---|---|
+| `enabled` | `true` | `true`/`false`. With no `host`, MQTT stays off anyway |
+| `host` | none | IPv4 address |
+| `port` | `1883` | 1-65535 |
+| `username` | none | |
+| `password_file` | `<data-dir>/mqtt-password` | absolute path; not settable over the API |
+| `prefix` | `tt7` | no `+`, `#`, spaces, empty levels, or leading or trailing `/` |
+| `client_id` | the device id | letters, digits and `-_.:`, up to 64 |
+| `keepalive` | `60` | 5-3600 s |
+| `telemetry_interval` | `10` | 1-86400 s |
+| `ha_discovery` | `true` | `true`/`false` |
+| `allow_reboot_cmd` | `false` | `true`/`false`; gates `cmd/reboot` and the HA Reboot button |
+
+An example `mqtt.conf` for the owner's broker (none of this is a built-in
+default):
+
+```text
+enabled=true
+host=192.168.23.123
+port=1883
+username=tt7
+prefix=tt7
+```
+
+`GET /api/v1/config/mqtt` returns the settings in effect plus
+`config_revision`, `password_set` (never the password), `effective_client_id`,
+`set_by_flags`, and `config_error`. `config_error` says why `mqtt.conf` was
+not used; in that case MQTT stays off and the display runs on.
+
+`PUT` takes a JSON object with any subset of the keys above, plus
+`"password"`: a string, or `null` to delete the password file. It checks
+everything first and changes nothing if anything is wrong. Then it writes
+`mqtt-password` (mode 0600) and `mqtt.conf` (temp file, fsync, rename), bumps
+`config_revision`, and reconnects. Before leaving the old broker it publishes
+`offline` to the availability topic. If the broker changed or discovery was
+turned off, it also removes the HA entities there.
+
+The easy way, from a machine that has the token in `~/.config/tt7/token`:
+
+```sh
+printf '%s\n' 'the-broker-password' > ~/.config/tt7/mqtt-password; chmod 600 ~/.config/tt7/mqtt-password
+tools/mqtt-setup.sh <panel-ip> --broker 192.168.23.123:1883 --user tt7 \
+    --password-file ~/.config/tt7/mqtt-password
+```
+
+The script sends the password in the request body on curl's stdin, and the
+token through a pipe. Neither shows up in `ps`.
+
+### Topics
+
+Base: `<prefix>/<device id>`, e.g. `tt7/tt7-7f38a2`.
+
+| Topic | Retained | Payload |
+|---|---|---|
+| `availability` | yes | `online` after connecting; the Last Will is `offline` |
+| `state` | yes | JSON, every `telemetry_interval`, and within 1 s of a change to the frame id, brightness, battery, power or IPs. Example below |
+| `sensor/<name>` | yes | plain values: `uptime_s`, `battery_percent`, `charging` (`true`/`false`), `brightness` (percent), `frame_age_s`, `wifi_ip`, `ethernet_ip`; each only when known |
+| `event/boot` | no | `{"type":"boot","firmware_version":"0.1.0 (…)","uptime_s":41,"timestamp":"…"}`, once per daemon start, on the first connect |
+| `event/frame` | no | `{"type":"frame","frame_id":"…","sha256":"…","deduplicated":false,"timestamp":"…"}` for each accepted `PUT /frame` |
+| `event/error` | no | `{"type":"error","error":"unsupported_command","command":"wake","message":"…","timestamp":"…"}` |
+| `event/button` | no | M3 publishes physical button events with `mqtt_app_event(m, "button", json)`. Touch stays off MQTT (the owner chose a WebSocket for it) |
+| `cmd/brightness` | (in) | `NN%` (0-100), or a raw level `NN` (0 to `max_brightness`, which is 255 here) |
+| `cmd/wake`, `cmd/blank` | (in) | anything |
+| `cmd/reboot` | (in) | anything; refused with `command_disabled` unless `allow_reboot_cmd=true` |
+
+```json
+{"time":"2026-09-28T03:04:59.746Z","uptime_s":22162,"battery_percent":82,"battery_estimate":true,
+ "charging":false,"external_power":false,"brightness":50,"display_on":true,"wifi_ip":"192.168.23.197",
+ "ethernet_ip":null,"frame_id":"tt7d-f9975b8e7a148cff8da65975","frame_age_s":3.3,"last_touch":null}
+```
+
+`battery_percent` is the kernel gauge's reading, which jumps between boots
+(gotchas.md), and `battery_estimate` is always `true` to say so. `last_touch`
+is `null` for now (SPEC §24 lists it).
+
+Commands are only taken live. A broker replays a retained message, flagged
+retained, to every new subscription, so tt7d ignores commands that arrive
+with that flag; otherwise a retained `cmd/reboot` would reboot the panel on
+every reconnect.
+
+**Commands and M4.** On this branch tt7d has no brightness, wake, blank or
+reboot code; M4 (the control panel) adds it. MQTT reaches those operations
+only through `struct mqtt_actions` in `mqtt.h`, and `main.c` passes `NULL` for
+now. So every command answers `event/error` `unsupported_command`, and the
+matching HA controls are not advertised. When M4 merges, it fills in the
+struct in `main.c`, and `mqtt*.c` stays as it is.
+
+### Home Assistant discovery
+
+tt7d publishes one retained config per entity at
+`homeassistant/<component>/<device id>/<object>/config`. All entities belong to
+one device: `identifiers` [device id], `name` "TT7 <device id>", `model`
+C4-TT7, `manufacturer` "Control4 (repurposed)", and `sw_version`. Each has
+`availability_topic` set to the availability topic and a `unique_id` of
+`<device id>_<object>`. Entities read the `state` JSON through
+`value_template`.
+
+| Entity | When |
+|---|---|
+| `sensor` battery ("Battery (estimate)", device class battery, %) and `binary_sensor` charging (battery_charging) | a Battery supply is present |
+| `sensor` uptime and frame age (duration, s, diagnostic) | always |
+| `sensor` Wi-Fi IP / Ethernet IP (diagnostic) | `wlan0` / `eth0` exists |
+| `sensor` brightness (%) | a backlight, and no brightness operation (this branch) |
+| `number` brightness (0-100 %, slider, sends `NN%` to `cmd/brightness`) | a backlight, and `set_brightness` wired (after M4) |
+| `button` wake, blank | the operation is wired (after M4) |
+| `button` reboot (device class restart) | wired (after M4), and `allow_reboot_cmd=true` |
+
+Every connect publishes every entity: the real config if the entity is
+available, or an empty retained payload if not, which removes it. So
+capabilities that disappear and `ha_discovery=false` both clean up after
+themselves. tt7d also listens on `homeassistant/status` and announces again
+when Home Assistant says `online`.
+
+Sources for the field names (read 2026-09-27):
+https://www.home-assistant.io/integrations/mqtt/ (discovery topic, empty
+payload removes, device block, availability, birth message),
+`/integrations/sensor.mqtt/` (a JSON `null` through `value_template` renders
+`None`, which makes a numeric sensor `unknown`),
+`/integrations/binary_sensor.mqtt/`, `/integrations/number.mqtt/`,
+`/integrations/button.mqtt/`, and the `battery_charging` and `restart` device
+classes on `/integrations/binary_sensor/` and `/integrations/button/`.
 
 ## On the panel
 
@@ -248,6 +421,17 @@ ssh $S $P 'nohup reboot -f > /dev/null 2>&1 &'           # detached: see gotchas
 To undo it: `ssh $S $P 'rm /data/tt7/app && sync'` and reboot. This reboots the
 panel, so like a flash it needs Doctor Biz's go-ahead.
 
+### Connecting the panel to the broker
+
+After installing a new `build/tt7d` as above, with the token in
+`~/.config/tt7/token`:
+
+```sh
+tools/mqtt-setup.sh <panel-ip> --broker 192.168.23.123:1883 --user <user> \
+    --password-file ~/.config/tt7/mqtt-password     # omit --user/--password-file for an anonymous broker
+curl -s http://<panel-ip>/api/v1/state | python3 -m json.tool | grep -A10 '"mqtt"'
+```
+
 ## Unverified
 
 - The rotation default (90), until someone photographs the test frame on the dock.
@@ -278,3 +462,7 @@ panel, so like a flash it needs Doctor Biz's go-ahead.
 - The wall clock: the panel has an RTC (`hym8563`), but nothing sets the time,
   so `received_at` and `time` may read 1970 or be stale. `frame_age_s` uses
   the monotonic clock and is correct regardless.
+- MQTT has only met amqtt 0.12.1 (tests) so far, not the owner's broker at
+  192.168.23.123, not mosquitto, and not the panel's network stack.
+- The Home Assistant discovery payloads follow the documentation cited above
+  but have not been loaded into a real Home Assistant.

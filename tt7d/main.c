@@ -11,6 +11,7 @@
 #include "display.h"
 #include "frame.h"
 #include "ident.h"
+#include "mqtt.h"
 #include "panel.h"
 #include "render.h"
 #include "server.h"
@@ -37,6 +38,9 @@ struct config {
     const char *reboot_cmd;
     size_t max_frame_bytes;
     int timeout_ms;
+    const char *mqtt_flags[2 * MQF_COUNT]; /* --mqtt-KEY VALUE, as key/value pairs */
+    char mqtt_keys[MQF_COUNT][32];
+    int n_mqtt_flags;
 };
 
 struct app {
@@ -44,6 +48,7 @@ struct app {
     struct display disp;
     struct frame_store frames;
     struct panel panel;
+    struct mqtt_app mqtt;
     char token[256];
     char device_id[32]; /* "" if device.json is unusable: reported as null */
     struct timespec started;
@@ -68,6 +73,9 @@ static void usage(FILE *out) {
             "  --reboot-cmd CMD          run with /bin/sh -c by POST /api/v1/system/reboot (default 'reboot -f')\n"
             "  --max-frame-bytes N       largest accepted PNG (default 8388608)\n"
             "  --request-timeout-ms N    time to receive a request, and to send its reply (default 30000)\n"
+            "  --mqtt-KEY VALUE          override one <data-dir>/mqtt.conf setting (tt7d/README.md): enabled,\n"
+            "                            host, port, username, password-file, prefix, client-id, keepalive,\n"
+            "                            telemetry-interval, ha-discovery, allow-reboot-cmd\n"
             "  --version, --help\n");
 }
 
@@ -117,6 +125,17 @@ static int parse_args(int argc, char **argv, struct config *c) {
             c->max_frame_bytes = n;
         else if (!strcmp(a, "--request-timeout-ms") && parse_uint(v, 600000, &n) == 0 && n >= 100)
             c->timeout_ms = (int)n;
+        else if (!strncmp(a, "--mqtt-", 7) && strlen(a + 7) < sizeof c->mqtt_keys[0] &&
+                 c->n_mqtt_flags < MQF_COUNT) {
+            /* --mqtt-password-file -> password_file; mqtt.c validates the pair. */
+            char *key = c->mqtt_keys[c->n_mqtt_flags];
+            snprintf(key, sizeof c->mqtt_keys[0], "%s", a + 7);
+            for (char *p = key; *p; p++)
+                if (*p == '-') *p = '_';
+            c->mqtt_flags[2 * c->n_mqtt_flags] = key;
+            c->mqtt_flags[2 * c->n_mqtt_flags + 1] = v;
+            c->n_mqtt_flags++;
+        }
         else {
             fprintf(stderr, "tt7d: bad option or value: %s %s\n", a, v);
             return -1;
@@ -156,7 +175,8 @@ static void info_json(struct app *a, struct sbuf *sb) {
     sysinfo_capabilities(sb, a->cfg.sysfs_root);
     sb_puts(sb, "},\"auth\":{\"scheme\":\"bearer\",\"required_for\":[\"PUT /api/v1/frame\",\"GET /api/v1/logs\","
                 "\"PUT /api/v1/display/brightness\",\"POST /api/v1/display/blank\",\"POST /api/v1/display/wake\","
-                "\"POST /api/v1/display/test-pattern\",\"POST /api/v1/system/reboot\"]}}");
+                "\"POST /api/v1/display/test-pattern\",\"POST /api/v1/system/reboot\",\"GET /api/v1/config/mqtt\","
+                "\"PUT /api/v1/config/mqtt\"]}}");
 }
 
 static double seconds_since(const struct timespec *t, clockid_t clock) {
@@ -192,7 +212,9 @@ static void state_json(struct app *a, struct sbuf *sb) {
     sb_printf(sb, ",\"frames\":{\"accepted\":%lu,\"deduplicated\":%lu,\"rejected\":%lu,\"last_error\":",
               fs->accepted, fs->dedup_count, fs->rejected);
     sb_json_str(sb, fs->last_error);
-    sb_puts(sb, "}}");
+    sb_puts(sb, "},");
+    mqtt_app_state_member(&a->mqtt, sb);
+    sb_puts(sb, "}");
 }
 
 /* ---- routes ---------------------------------------------------------------- */
@@ -207,6 +229,7 @@ static const struct route routes[] = {
     {"/api/v1/state", "GET"},
     {"/api/v1/frame", "GET, PUT"},
     {"/api/v1/frame/image", "GET"},
+    {"/api/v1/config/mqtt", "GET, PUT"},
 };
 
 static int find_route(const char *path) {
@@ -244,6 +267,7 @@ static int app_check_head(void *ctx, const struct http_request *req, struct resp
         snprintf(resp->extra_headers, sizeof resp->extra_headers, "Allow: %s\r\n", routes[i].allow);
         return -1;
     }
+    if (!strcmp(req->path, "/api/v1/config/mqtt")) return mqtt_http_check_head(a->token, req, resp);
     return is_frame_put(req) ? frame_check_head(a->token, req, resp) : 0;
 }
 
@@ -259,6 +283,8 @@ static void app_handle(void *ctx, const struct http_request *req, const uint8_t 
         info_json(a, &resp->body);
     } else if (!strcmp(req->path, "/api/v1/state")) {
         state_json(a, &resp->body);
+    } else if (!strcmp(req->path, "/api/v1/config/mqtt")) {
+        mqtt_http_handle(&a->mqtt, req, body, len, resp);
     } else if (!a->frames.have) {
         resp_error(resp, 404, "no_frame", "no frame has been shown since tt7d started");
     } else if (!strcmp(req->path, "/api/v1/frame")) {
@@ -276,7 +302,14 @@ static void app_on_reply(void *ctx, const struct http_request *req, const struct
         a->frames.rejected++;
         a->frames.last_error = resp->error;
     }
+    if (is_frame_put(req) && resp->status == 200) mqtt_app_frame_accepted(&a->mqtt);
 }
+
+static void app_poll_prepare(void *ctx, struct pollfd *pfd, int64_t *wait_ms) {
+    mqtt_app_prepare(&((struct app *)ctx)->mqtt, pfd, wait_ms);
+}
+
+static void app_poll_service(void *ctx, short revents) { mqtt_app_service(&((struct app *)ctx)->mqtt, revents); }
 
 int main(int argc, char **argv) {
     static struct app a;
@@ -322,9 +355,18 @@ int main(int argc, char **argv) {
                              .frames = &a.frames};
     panel_init(&a.panel);
 
+    /* MQTT after the display is up: a broker problem never delays the screen.
+     * No display operations are wired up yet (M4 adds them: see mqtt.h). */
+    if (mqtt_app_init(&a.mqtt, a.cfg.data_dir, a.cfg.sysfs_root, a.device_id, FIRMWARE_VERSION " (" TT7D_VERSION ")",
+                      &a.frames, NULL, a.cfg.mqtt_flags, a.cfg.n_mqtt_flags, err, sizeof err) != 0) {
+        fprintf(stderr, "tt7d: %s\n", err);
+        return 2;
+    }
+
     struct server_config sc = {.listen = a.cfg.listen, .max_head = 8192, .max_body = a.cfg.max_frame_bytes,
                                .timeout_ms = a.cfg.timeout_ms, .max_connections = 8};
-    struct server_handlers h = {.ctx = &a, .check_head = app_check_head, .handle = app_handle, .on_reply = app_on_reply};
+    struct server_handlers h = {.ctx = &a, .check_head = app_check_head, .handle = app_handle, .on_reply = app_on_reply,
+                                .poll_prepare = app_poll_prepare, .poll_service = app_poll_service};
     server_run(&sc, &h, err, sizeof err);
     fprintf(stderr, "tt7d: %s\n", err);
     return 1;

@@ -75,8 +75,9 @@ def free_port():
 
 
 class Daemon:
-    def __init__(self, binary, workdir):
+    def __init__(self, binary, workdir, extra_args=()):
         self.binary = binary
+        self.extra_args = list(extra_args)
         self.fb = os.path.join(workdir, "fb.raw")
         self.data = os.path.join(workdir, "data")
         self.log_path = os.path.join(workdir, "tt7d.log")
@@ -97,7 +98,7 @@ class Daemon:
              "--rotation", "90", "--data-dir", self.data, "--sysfs-root", self.sysfs,
              "--proc-root", PROC_FIXTURE, "--log-file", self.log_path,
              "--reboot-cmd", "touch " + shlex.quote(self.reboot_marker),
-             "--request-timeout-ms", str(TIMEOUT_MS)],
+             "--request-timeout-ms", str(TIMEOUT_MS)] + self.extra_args,
             stdout=log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:

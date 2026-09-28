@@ -3,6 +3,7 @@
 #ifndef TT7D_SERVER_H
 #define TT7D_SERVER_H
 
+#include <poll.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -27,6 +28,12 @@ struct server_handlers {
     /* Called with every reply to a request whose head parsed, including the
      * server's own errors (408, 411, 413): one place to count outcomes. */
     void (*on_reply)(void *ctx, const struct http_request *req, const struct response *resp);
+    /* Optional: one more descriptor in the same poll() (the MQTT client).
+     * poll_prepare fills *pfd (fd -1 for none) and may lower *wait_ms (-1 =
+     * no limit); poll_service gets its revents after every wakeup, timer
+     * or not. Neither may block. */
+    void (*poll_prepare)(void *ctx, struct pollfd *pfd, int64_t *wait_ms);
+    void (*poll_service)(void *ctx, short revents);
 };
 
 struct server_config {
