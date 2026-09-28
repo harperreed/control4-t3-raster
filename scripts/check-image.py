@@ -7,7 +7,8 @@
   3. the gzipped ramdisk fits the loader's initrd window from the parameter block
   4. the ramdisk: listing, root ownership, required files, no stray write bits
   5. authorized_keys is exactly the owner's key and no other public key is anywhere in the ramdisk
-  6. `file` says static ARM EABI5 for every executable; the NAND module matches the kernel version
+  6. `file` says static ARM EABI5 for every executable; the NAND module matches the kernel version;
+     tt7-app starts tt7d and the input-only logger
 """
 import argparse
 import gzip
@@ -35,6 +36,7 @@ REQUIRED = {
     "usr/bin/dropbearkey": "link",
     "usr/bin/scp": "link",
     "usr/bin/tt7probe": "file",
+    "usr/bin/tt7d": "file",
     "usr/bin/tt7-app": "file",
     "usr/bin/tt7-discover": "file",
     "usr/bin/tt7-wifi-start": "file",
@@ -190,6 +192,11 @@ def main():
     init = entries.get("init", (0, 0, 0, b""))[3]
     r.check(b"/data/tt7/usb-watchdog.log" in init, "init includes the USB link watchdog")
     r.check(b"tt7-usb-probe" in init, "init includes the RNDIS tx-stall remedy")
+    app = entries.get("usr/bin/tt7-app", (0, 0, 0, b""))[3]
+    r.check(b"tt7d --data-dir" in app and b"tt7probe log" in app and b"tt7probe run" not in app,
+            "tt7-app runs tt7d and the input-only logger, not the test pattern")
+    tt7d = entries.get("usr/bin/tt7d", (0, 0, 0, b""))[3]
+    r.check(b"/api/v1/frame" in tt7d, "tt7d serves /api/v1/frame")
     ko = entries.get("lib/modules/rk30xxnand_ko.ko", (0, 0, 0, b""))[3]
     vermagic = re.search(rb"vermagic=(\S+)", ko)
     release = re.search(rb"Linux version (\S+)", stock["kernel"])

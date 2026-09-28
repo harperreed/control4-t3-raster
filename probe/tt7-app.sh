@@ -1,11 +1,15 @@
 #!/bin/sh
-# ABOUTME: The TT7 probe image's app, run (and respawned) by init as /usr/bin/tt7-app.
-# ABOUTME: Picks one results dir per boot under /data/tt7/discovery, runs discovery once, runs tt7probe.
+# ABOUTME: The TT7 image's app, run (and respawned) by init as /usr/bin/tt7-app (or /data/tt7/app).
+# ABOUTME: One results dir per boot, discovery once, input logger, Wi-Fi, then tt7d (the display daemon) forever.
 #
 # Writes only under /data/tt7. If /data did not mount, results go to /tmp/tt7
 # (RAM) so nothing lands on the ramdisk's empty /data mount point.
+#
+# /data/tt7/bin comes first on PATH: a build copied there over ssh (tt7d,
+# tt7probe, ...) replaces the image's copy without a reflash. Delete it to go
+# back to the image's.
 
-PATH=/bin:/sbin:/usr/bin:/usr/sbin
+PATH=/data/tt7/bin:/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
 
 base=/data/tt7
@@ -39,7 +43,7 @@ echo "tt7-app: results in $out"
 # init only creates a handful by hand.
 mdev -s
 
-# A dark backlight would hide the test pattern; turn it up only if it is at 0.
+# A dark backlight would hide the frames; turn it up only if it is at 0.
 for bl in /sys/class/backlight/*; do
     [ -f "$bl/brightness" ] || continue
     if [ "$(cat "$bl/brightness")" = 0 ]; then
@@ -49,9 +53,6 @@ for bl in /sys/class/backlight/*; do
     fi
 done
 
-tt7probe run "$out" >> "$out/tt7probe.log" 2>&1 &
-probe=$!
-
 if [ ! -e "$out/discovery.done" ]; then
     tt7-discover "$out" > "$out/discover.log" 2>&1
     : > "$out/discovery.done"
@@ -59,14 +60,29 @@ if [ ! -e "$out/discovery.done" ]; then
     echo "tt7-app: discovery finished"
 fi
 
+# Raw input logging (input-events.log) until M3 turns touches into events.
+# `log` never opens the framebuffer: tt7d owns it. One logger per boot, so an
+# app respawn does not start a second one.
+logger_pid=/tmp/tt7probe-log.pid
+if ! { [ -f "$logger_pid" ] && kill -0 "$(cat "$logger_pid")" 2> /dev/null; }; then
+    tt7probe log "$out" >> "$out/tt7probe.log" 2>&1 &
+    echo $! > "$logger_pid"
+fi
+
 # Wi-Fi, once scripts/wifi-setup.sh has put a config on the panel. In the
-# background: the pattern and input logging must never wait on association
-# or DHCP. It logs to /data/tt7/wifi.log and is safe to re-run on a respawn.
+# background: the display must never wait on association or DHCP. It logs to
+# /data/tt7/wifi.log and is safe to re-run on a respawn.
 if [ -f /data/tt7/wifi/wpa_supplicant.conf ]; then
     echo "tt7-app: starting Wi-Fi (log /data/tt7/wifi.log)"
     tt7-wifi-start &
 fi
 
-wait "$probe"
-echo "tt7-app: tt7probe exited ($?); init respawns this app in 5 s"
-sleep 5
+# The display daemon, in the foreground (its log is this app's log). Restart
+# it here rather than exiting, so a tt7d crash or a deliberate `killall tt7d`
+# (to pick up a new /data/tt7/bin/tt7d) does not re-run the steps above.
+while :; do
+    echo "tt7-app: starting $(command -v tt7d)"
+    tt7d --data-dir "$base/tt7d"
+    echo "tt7-app: tt7d exited ($?); restarting in 2 s"
+    sleep 2
+done

@@ -3,7 +3,7 @@
 # ABOUTME: Run via `make rootfs`; mkcpio.py then packs it with every entry owned by root.
 #
 # Inputs (all produced by other make targets):
-#   build/init, build/tt7probe, build/busybox/{busybox,busybox.links},
+#   build/init, build/tt7probe, build/tt7d, build/busybox/{busybox,busybox.links},
 #   build/dropbear/dropbearmulti, build/wifi/{wpa_supplicant,wpa_cli},
 #   build/stock/ramdisk/rk30xxnand_ko.ko.3.0.36+
 #   SSH_PUBKEY (env): the one key allowed to log in as root.
@@ -41,7 +41,9 @@ ln -sfn dropbearmulti "$rfs/usr/sbin/dropbear"
 ln -sfn ../sbin/dropbearmulti "$rfs/usr/bin/dropbearkey"
 ln -sfn ../sbin/dropbearmulti "$rfs/usr/bin/scp"
 
-# The probe: init launches /usr/bin/tt7-app.
+# init launches /usr/bin/tt7-app, which runs discovery, the tt7probe input
+# logger and tt7d (the display daemon).
+install -D -m 0755 "$b/tt7d" "$rfs/usr/bin/tt7d"
 install -D -m 0755 "$b/tt7probe" "$rfs/usr/bin/tt7probe"
 install -D -m 0755 "$root/probe/tt7-app.sh" "$rfs/usr/bin/tt7-app"
 install -D -m 0755 "$root/probe/tt7-discover.sh" "$rfs/usr/bin/tt7-discover"

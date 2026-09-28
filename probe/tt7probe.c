@@ -1,5 +1,5 @@
 /* ABOUTME: TT7 hardware probe: draws a test pattern on /dev/fb0 and logs raw input events.
- * ABOUTME: `tt7probe fbinfo` prints the fb ioctls; `tt7probe run <dir>` draws, then logs touch forever. */
+ * ABOUTME: `fbinfo` prints the fb ioctls; `run <dir>` draws, then logs input forever; `log <dir>` only logs. */
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -347,10 +347,13 @@ static int cmd_fbinfo(void) {
     return 0;
 }
 
-static _Noreturn void cmd_run(const char *outdir) {
+/* draw = 0 (`log`): leave the framebuffer to tt7d and only log input. */
+static _Noreturn void cmd_run(const char *outdir, int draw) {
     struct fb fb;
-    FILE *f = open_out(outdir, "fb-ioctl.txt");
-    if (fb_open(&fb) == 0) {
+    memset(&fb, 0, sizeof fb); /* fb.ready stays 0 when not drawing: no touch dots */
+    fb.fd = -1;
+    FILE *f = draw ? open_out(outdir, "fb-ioctl.txt") : NULL;
+    if (draw && fb_open(&fb) == 0) {
         if (f) print_fbinfo(f, &fb.var, &fb.fix);
         if (ioctl(fb.fd, FBIOBLANK, FB_BLANK_UNBLANK) != 0)
             fprintf(stderr, "tt7probe: FBIOBLANK unblank: %s\n", strerror(errno));
@@ -424,12 +427,15 @@ static void usage(FILE *out) {
             "       tt7probe run <outdir>  draw the test pattern on /dev/fb0, write fb-ioctl.txt and\n"
             "                              input-devices.txt to <outdir>, then append every input event\n"
             "                              to <outdir>/input-events.log (capped at 4 MiB) and draw a dot\n"
-            "                              at each raw touch position. Never returns.\n");
+            "                              at each raw touch position. Never returns.\n"
+            "       tt7probe log <outdir>  like run, but never opens the framebuffer: only\n"
+            "                              input-devices.txt and input-events.log (runs beside tt7d).\n");
 }
 
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "fbinfo") == 0) return cmd_fbinfo();
-    if (argc == 3 && strcmp(argv[1], "run") == 0) cmd_run(argv[2]);
+    if (argc == 3 && strcmp(argv[1], "run") == 0) cmd_run(argv[2], 1);
+    if (argc == 3 && strcmp(argv[1], "log") == 0) cmd_run(argv[2], 0);
     if (argc == 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
         usage(stdout);
         return 0;
