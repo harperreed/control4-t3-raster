@@ -570,7 +570,9 @@ Base: `<prefix>/<device id>`, e.g. `tt7/tt7-7f38a2`.
 
 `battery_percent` is the kernel gauge's reading, which jumps between boots
 (gotchas.md), and `battery_estimate` is always `true` to say so. `last_touch`
-is `null` for now (SPEC §24 lists it).
+is the wall time of the last touch (as `/state`'s `input.last_touch`), null
+before the first. A touch alone does not publish the state; the next
+change or telemetry interval carries it.
 
 Commands are only taken live. A broker replays a retained message, flagged
 retained, to every new subscription, so tt7d ignores commands that arrive

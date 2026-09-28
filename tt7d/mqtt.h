@@ -43,6 +43,7 @@ struct mqtt_app {
     const char *sw_version;
     const struct frame_store *frames;
     const struct fallback_screen *screen; /* set by main after init; NULL = no fallback clock */
+    const struct timespec *last_touch; /* wall time of the last touch, kept by events.c; NULL = none yet */
     struct mqtt_actions actions;
     struct mqtt_client client;
     char base[160]; /* "<prefix>/<device id>" */

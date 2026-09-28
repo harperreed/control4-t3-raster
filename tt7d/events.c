@@ -45,6 +45,7 @@ static void on_touch(void *ctx, const struct input_device *d, const struct touch
     sb_free(&sb);
     e->last_touch = wall;
     e->have_last_touch = 1;
+    e->mqtt->last_touch = &e->last_touch; /* MQTT state reads it from here */
 }
 
 static void on_button(void *ctx, const struct input_device *d, int code, int pressed) {

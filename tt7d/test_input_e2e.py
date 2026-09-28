@@ -204,8 +204,8 @@ def touch_sequence(d, ws, rotation, frame_id):
     check_touch(messages(ws, 1, "first up")[0], "up", 0, (640, 50), rotation, frame_id)
 
 
-def test_touch_on_fallback_clock(d):
-    """Before any frame the fallback clock is on screen: touches carry its id."""
+def test_touch_on_fallback_clock(d, obs, base):
+    """Before any frame the fallback clock is on screen: touches carry its id, and MQTT state has the last touch."""
     shown = d.get_json("/api/v1/state")["display"]["frame_id"]
     assert shown and shown.startswith("fallback-clock-"), f"/state frame_id {shown!r}, want the fallback clock's"
     ws, hello = d.stream()
@@ -218,6 +218,11 @@ def test_touch_on_fallback_clock(d):
     ws.close()
     last_touch = d.get_json("/api/v1/state")["input"]["last_touch"]
     assert ISO.fullmatch(last_touch or ""), last_touch
+    # A frame changes the state, so tt7d publishes it; it carries the touch time.
+    obs.drain()
+    put_frame(d, "after-clock-touch")
+    payload, _ = obs.expect(f"{base}/state", lambda p, r: json.loads(p)["frame_id"] == "after-clock-touch")
+    assert json.loads(payload)["last_touch"] == last_touch, payload
 
 
 def test_touch(d, rotation, events_tool):
@@ -364,8 +369,8 @@ def main():
             wait_for("MQTT connected", lambda: d.get_json("/api/v1/state")["mqtt"]["connected"])
             steps.append("/info lists the touch range and buttons; /state input; the log names the devices")
             test_info_and_state(d)
-            steps.append("touches on the fallback clock carry its frame_id")
-            test_touch_on_fallback_clock(d)
+            steps.append("touches on the fallback clock carry its frame_id; MQTT state last_touch")
+            test_touch_on_fallback_clock(d, obs, base)
             steps.append("WebSocket auth: 401 without or with a wrong token, ?token= works, 426, 405")
             test_auth(d)
             steps.append("rotation 90: down/move/up order, logical coords, throttle, frame_id (+ tools/events.py)")

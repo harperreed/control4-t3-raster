@@ -175,7 +175,10 @@ static void build_state(struct mqtt_app *m, const struct sysinfo_values *v, stru
         sb_puts(sig, ",");
         fallback_json(&m->screen->state, now_ms, &now, 0, sig);
     }
-    sb_puts(doc, ",\"last_touch\":null}");
+    sb_puts(doc, ",\"last_touch\":"); /* not in sig: a touch alone does not publish */
+    if (m->last_touch) sb_json_time(doc, m->last_touch);
+    else sb_puts(doc, "null");
+    sb_puts(doc, "}");
     sb_puts(sig, "}");
 }
 
