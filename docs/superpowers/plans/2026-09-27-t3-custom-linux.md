@@ -7,7 +7,8 @@
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
 - Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
 - Approved: "lets deploy it" (2026-09-27): flash image 00235b6f… (TX-stall watchdog) over Wi-Fi
-- Open: deploy tt7d to the panel via /data/tt7/app overlay (needs go-ahead); default rotation 90 is a guess, so confirm with tools/make-test-frame.py photo
+- Approved: "yep" (2026-09-27): deploy tt7d via /data/tt7/app overlay + push test frame
+- Open: default rotation 90 is a guess, so confirm with tools/make-test-frame.py photo
 - Open (older): Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
 - Approved: "a + c" (2026-09-27): dashboard + control panel content, now served by the server side of SPEC.md
