@@ -2,7 +2,7 @@
 
 ## Now
 - Step: both units on main 89be49a. Tabletop tt7-4009b5 (192.168.23.197): image + web-update release 89be49a, confirmed; MQTT up. Wall 7" tt7-942093 (192.168.23.198): flashed via Loader then USB, Wi-Fi via /data/tt7/modules override (rotted /system rkwifi.oob.ko)
-- Next: fix 411 on bodyless POST; camera snapshot rotate option (tabletop camera is upside down); web-update bootstrap on the wall unit; unknown key_59 on the wall
+- Next: panel side paused; work moved to docs/superpowers/plans/2026-09-28-tt7-server.md (backend for N screens). Deferred: 411 on bodyless POST, camera rotate (skipped per Doctor Biz), wall web-update bootstrap, key_59
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
 - Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
