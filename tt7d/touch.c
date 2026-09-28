@@ -139,9 +139,12 @@ int touch_feed(struct touch_state *t, uint16_t type, uint16_t code, int32_t valu
             if (value < 0) {
                 s->lift = s->active;
                 s->start = 0;
-            } else { /* a new contact; a new id on a live slot replaces its contact */
+            } else if (!(s->active && !s->lift && s->key == value)) {
+                /* A new contact; a new id on a live slot replaces its contact. The
+                 * same id again is not news: some drivers resend it every report. */
                 s->lift = s->active;
                 s->start = 1;
+                s->key = value;
             }
         } else if (code == ABS_MT_POSITION_X) {
             set_x(s, value);

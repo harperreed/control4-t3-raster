@@ -30,7 +30,7 @@ struct touch_slot {
     int64_t sent_ms;
     int pending;            /* a move is held back by the throttle */
     int changed, start, lift;
-    int64_t key;            /* protocol A: the contact's tracking id, or -1 - its index in the report */
+    int64_t key;            /* the tracking id (B); A: the tracking id, or -1 - its index in the report */
 };
 
 struct touch_contact { /* protocol A: one contact of the report being built */

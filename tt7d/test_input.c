@@ -73,6 +73,17 @@ static void test_protocol_b(void) {
     FEED(&t, 1100, {EV_ABS, ABS_MT_TRACKING_ID, -1}, {EV_ABS, ABS_MT_SLOT, 1}, {EV_ABS, ABS_MT_TRACKING_ID, -1}, SYN);
     CHECK(n == 2 && is(&out[0], TOUCH_UP, 0, 110, 300) && is(&out[1], TOUCH_UP, 1, 500, 610), "both up");
 
+    /* A driver that resends the same tracking id with every report: still one contact. */
+    FEED(&t, 1150, {EV_ABS, ABS_MT_TRACKING_ID, 48}, {EV_ABS, ABS_MT_POSITION_X, 20}, SYN);
+    CHECK(n == 1 && is(&out[0], TOUCH_DOWN, 1, 20, 610), "slot 1 down again (n=%d)", n);
+    FEED(&t, 1170, {EV_ABS, ABS_MT_TRACKING_ID, 48}, {EV_ABS, ABS_MT_POSITION_X, 30}, SYN);
+    CHECK(n == 1 && is(&out[0], TOUCH_MOVE, 1, 30, 610), "same id again is a move, not up + down (n=%d)", n);
+    /* A different id on the live slot: the old contact ends, a new one starts. */
+    FEED(&t, 1190, {EV_ABS, ABS_MT_TRACKING_ID, 49}, SYN);
+    CHECK(n == 2 && is(&out[0], TOUCH_UP, 1, 30, 610) && is(&out[1], TOUCH_DOWN, 1, 30, 610), "id change (n=%d)", n);
+    FEED(&t, 1195, {EV_ABS, ABS_MT_TRACKING_ID, -1}, SYN);
+    CHECK(n == 1 && out[0].action == TOUCH_UP, "up");
+
     /* An out-of-range slot is ignored rather than written past the array. */
     FEED(&t, 1200, {EV_ABS, ABS_MT_SLOT, 99}, {EV_ABS, ABS_MT_TRACKING_ID, 5}, {EV_ABS, ABS_MT_POSITION_X, 1}, SYN);
     CHECK(n == 0, "slot 99 ignored (n=%d)", n);
