@@ -146,3 +146,10 @@
 - TweetNaCl 20140427 left-shifts negative signed carries (UB; UBSan reports it). Two lines patched to multiplications; see `third_party/tweetnacl/PROVENANCE`.
 - Sourcing a tt7-app.sh on the host runs its whole body (ntpd waiter, tt7d loop, `/tmp/tt7*` pid files). Tests source it with `TT7_APP_LIB=1`, which returns right after the function definitions.
 - In this sandbox `agent-browser ... eval` is refused (read as shell `eval`); use `get text`, `get attr` and `snapshot`.
+
+## Second unit: in-wall T3, serial 000fff80e822 (2026-09-28)
+- Loader mode worked on the 3rd try: unlabeled pinhole (left of the mic, NOT RESET), all power off first, hold while plugging micro-USB. The first two attempts rebooted to stock (26 s and 40 s gaps on USB), so the press timing matters.
+- Same Hynix 8528 MB NAND and mtdparts as the tabletop. Its parameter has `initrd=0x62000000,0x00800000` (tabletop: `0x001A0000`).
+- Stock `boot` read twice, identical, embedded SHA1 valid → `backup/wall-000fff80e822-2026-09-28/03_boot.bin`. Ramdisk is genuine stock.
+- Kernel = the same 3.0.36+ `glassedge` universal kernel, **rebuilt 2025-03-13** (builder@linux-build-2). It differs from the tabletop's 2023 build by only 102 bytes (build strings). Still build each unit's image from its own boot backup.
+- **Building a second unit's image:** `make STOCK_BOOT=backup/<unit>/03_boot.bin IMAGE=build/tt7-<unit>-boot.img build/tt7-<unit>-boot.img`, then `check-image.py --stock` against that unit's boot. `build/stock.src` forces the kernel to be re-extracted when STOCK_BOOT changes. Before that marker, a wall build left its kernel in build/stock and the next tabletop image silently used it (caught by check-image, fixed 544dc18). `make clean` keeps `build/tt7-wall-*.img`.
