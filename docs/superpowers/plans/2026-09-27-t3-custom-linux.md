@@ -1,13 +1,14 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: watchdog image 00235b6f… deployed (boot #4); 5 min idle = no false remedies, no USB resets. M0 dump PAUSED at system chunk 8/16 (battery)
+- Step: tt7d M1+M2 built on branch tt7d-m1-m2 (make check 119 ok; e2e on file-backed fb). Not yet on the panel. M0 dump still PAUSED at system chunk 8/16 (needs dock power)
 - Next: when docked on its power adapter: resume `scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27 system`, then cache/userdata/user; verify the watchdog fixes a real stall (usb-watchdog.log). Then docs/hardware-inventory.md + recovery doc (closes M0), then tt7d M1/M2
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
 - Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
 - Approved: "lets deploy it" (2026-09-27): flash image 00235b6f… (TX-stall watchdog) over Wi-Fi
-- Open: Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
+- Open: deploy tt7d to the panel via /data/tt7/app overlay (needs go-ahead); default rotation 90 is a guess, so confirm with tools/make-test-frame.py photo
+- Open (older): Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
 - Approved: "a + c" (2026-09-27): dashboard + control panel content, now served by the server side of SPEC.md
 - Approved: "i figired out a much better solution" + pasted SPEC.md (2026-09-27): tt7d dumb network display supersedes the Smashing/rooted-Android kiosk
@@ -47,6 +48,7 @@ Architecture per those files: `boot.img` = stock kernel + our gzipped cpio ramdi
 - Dev loop: `sim/` headless renderer on the PC → scp the binary to `/data` → restart the app.
 
 ## Log
+- 2026-09-27: tt7d M1+M2 built: PUT/GET frame (PNG, lodepng), info/state, token auth, dedup, persist, rotation flag. Host e2e green. docs/hardware-inventory.md written.
 - 2026-09-27: Watchdog+Wi-Fi image (5812654f…) flashed over Wi-Fi and booted; auto-joins Wi-Fi. `reboot -f` takes ~5 min.
 - 2026-09-27: Probe image booted on TT7 (glassedge7p, fb 800x1280 RGB565, gslX680 touch). USB gadget resets killed the first kernel dump; Wi-Fi (nl80211) works. Kernel-side reads: misc/boot/recovery/backup stable, `kernel` mtd1 differed between two reads (to investigate).
 - 2026-09-27: Stock `boot` dump verified byte-exact (embedded Rockchip SHA1 id matches). Large-partition loader dumps are NOT reliable (gotchas.md). Plan: take a clean full dump from our own Linux through the kernel mtd driver once it boots.
