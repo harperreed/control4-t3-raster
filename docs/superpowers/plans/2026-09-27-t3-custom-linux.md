@@ -1,7 +1,7 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: parallel agents in worktrees: M3 input/WebSocket (branch tt7d-m3-input) and fallback clock + NTP (branch tt7d-fallback-clock), both from main. Then merge, then camera integration (from cam-spike), then web update
+- Step: main has M1-M6 + M3 input/WebSocket + fallback clock/NTP (make check green). Panel still runs M4-only tt7d 6bc0922. Deploy = overlays only (flashed image already has ntpd): probe/tt7-app.sh→/data/tt7/app, build/tt7d, build/tt7probe, probe/tt7-ntp-hook.sh→/data/tt7/bin/tt7-ntp-hook, then reboot. Needs go-ahead
 - Next: when docked on its power adapter: resume `scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27 system`, then cache/userdata/user; verify the watchdog fixes a real stall (usb-watchdog.log). Then docs/hardware-inventory.md + recovery doc (closes M0), then tt7d M1/M2
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
