@@ -24,7 +24,6 @@
 #include "sysinfo.h"
 
 #define LOG_TAIL_BYTES (256 * 1024) /* how much of the log file end is read for a tail */
-#define REBOOT_DELAY_S 1            /* lets the 202 reach the client first */
 
 enum route_id { R_HARDWARE, R_SYSTEM, R_LOGS, R_BRIGHTNESS, R_BLANK, R_WAKE, R_TEST_PATTERN, R_REBOOT };
 
@@ -122,24 +121,37 @@ static void display_state(const struct panel *p, const char *bl, struct response
     sb_puts(sb, ",\"blank_method\":\"backlight\"}");
 }
 
-static void write_failed(struct response *resp, const char *bl) {
-    resp_error_begin(resp, 500, "backlight_write_failed", "could not write the backlight's sysfs file");
-    sb_puts(&resp->body, ",\"device\":");
-    sb_json_str(&resp->body, bl);
-    sb_puts(&resp->body, ",\"detail\":");
-    sb_json_str(&resp->body, strerror(errno));
-    resp_error_end(resp);
+/* The HTTP answer for a panel_* action result. */
+static void action_reply(struct panel *p, int rc, struct response *resp) {
+    int saved = errno;
+    char bl[NAME_LEN];
+    backlight_name(p, bl);
+    switch (rc) {
+    case PANEL_OK: display_state(p, bl, resp); break;
+    case PANEL_NO_BACKLIGHT: resp_error(resp, 503, "no_backlight", "no backlight device in sysfs"); break;
+    default: /* PANEL_WRITE_FAILED */
+        resp_error_begin(resp, 500, "backlight_write_failed", "could not write the backlight's sysfs file");
+        sb_puts(&resp->body, ",\"device\":");
+        sb_json_str(&resp->body, bl);
+        sb_puts(&resp->body, ",\"detail\":");
+        sb_json_str(&resp->body, strerror(saved));
+        resp_error_end(resp);
+    }
 }
 
-static int require_backlight(const struct panel *p, char *bl, struct response *resp) {
+int panel_set_brightness(struct panel *p, long value, int percent) {
+    char bl[NAME_LEN];
     backlight_name(p, bl);
-    if (bl[0]) return 0;
-    resp_error(resp, 503, "no_backlight", "no backlight device in sysfs");
-    return -1;
+    if (!bl[0]) return PANEL_NO_BACKLIGHT;
+    long max = read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
+    long raw = brightness_to_raw(value, percent, max);
+    if (raw < 0) return PANEL_OUT_OF_RANGE;
+    if (backlight_write(p, bl, "brightness", raw) != 0) return PANEL_WRITE_FAILED;
+    if (raw > 0) p->wake_level = raw;
+    return PANEL_OK;
 }
 
 static void set_brightness(struct panel *p, const uint8_t *body, size_t len, struct response *resp) {
-    char bl[NAME_LEN];
     long value;
     int percent;
     if (brightness_parse((const char *)body, len, &value, &percent) != 0) {
@@ -147,10 +159,11 @@ static void set_brightness(struct panel *p, const uint8_t *body, size_t len, str
                    "send {\"value\": <integer>} (raw backlight level) or {\"value\": <0-100>, \"unit\": \"percent\"}");
         return;
     }
-    if (require_backlight(p, bl, resp) != 0) return;
-    long max = read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
-    long raw = brightness_to_raw(value, percent, max);
-    if (raw < 0) {
+    int rc = panel_set_brightness(p, value, percent);
+    if (rc == PANEL_OUT_OF_RANGE) {
+        char bl[NAME_LEN];
+        backlight_name(p, bl);
+        long max = read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
         resp_error_begin(resp, 400, "brightness_out_of_range", "the value is outside the allowed range");
         sb_printf(&resp->body, ",\"unit\":\"%s\",\"min\":0,\"max\":", percent ? "percent" : "raw");
         if (percent || max > 0) sb_printf(&resp->body, "%ld", percent ? 100L : max);
@@ -158,47 +171,36 @@ static void set_brightness(struct panel *p, const uint8_t *body, size_t len, str
         resp_error_end(resp);
         return;
     }
-    if (backlight_write(p, bl, "brightness", raw) != 0) {
-        write_failed(resp, bl);
-        return;
-    }
-    if (raw > 0) p->wake_level = raw;
-    display_state(p, bl, resp);
+    action_reply(p, rc, resp);
 }
 
 /* Blank = backlight level 0, keeping the old level for wake. The fb blank
  * ioctl is not used: on this Rockchip 3.0 kernel it is unverified what it
  * powers down and whether unblank brings the LCD controller back. */
-static void blank(struct panel *p, struct response *resp) {
+int panel_blank(struct panel *p) {
     char bl[NAME_LEN];
-    if (require_backlight(p, bl, resp) != 0) return;
+    backlight_name(p, bl);
+    if (!bl[0]) return PANEL_NO_BACKLIGHT;
     long cur = read_long(p->sysfs_root, "class/backlight", bl, "brightness", -1);
     if (cur > 0) p->wake_level = cur;
-    if (cur != 0 && backlight_write(p, bl, "brightness", 0) != 0) {
-        write_failed(resp, bl);
-        return;
-    }
-    display_state(p, bl, resp);
+    if (cur != 0 && backlight_write(p, bl, "brightness", 0) != 0) return PANEL_WRITE_FAILED;
+    return PANEL_OK;
 }
 
 /* Wake = bl_power back to 0 (on) if something set it, and the remembered
  * level if the backlight is at 0. Without a remembered level (tt7d started
  * while blank), max_brightness, as tt7-app does at boot. */
-static void wake(struct panel *p, struct response *resp) {
+int panel_wake(struct panel *p) {
     char bl[NAME_LEN];
-    if (require_backlight(p, bl, resp) != 0) return;
+    backlight_name(p, bl);
+    if (!bl[0]) return PANEL_NO_BACKLIGHT;
     if (read_long(p->sysfs_root, "class/backlight", bl, "bl_power", 0) != 0 &&
-        backlight_write(p, bl, "bl_power", 0) != 0) {
-        write_failed(resp, bl);
-        return;
-    }
+        backlight_write(p, bl, "bl_power", 0) != 0)
+        return PANEL_WRITE_FAILED;
     long cur = read_long(p->sysfs_root, "class/backlight", bl, "brightness", -1);
     long level = p->wake_level > 0 ? p->wake_level : read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
-    if (cur == 0 && level > 0 && backlight_write(p, bl, "brightness", level) != 0) {
-        write_failed(resp, bl);
-        return;
-    }
-    display_state(p, bl, resp);
+    if (cur == 0 && level > 0 && backlight_write(p, bl, "brightness", level) != 0) return PANEL_WRITE_FAILED;
+    return PANEL_OK;
 }
 
 /* ---- test pattern -------------------------------------------------------------- */
@@ -217,17 +219,15 @@ static void test_pattern(struct panel *p, struct response *resp) {
 
 /* ---- reboot -------------------------------------------------------------------- */
 
-/* Reply 202 first; a detached grandchild waits, syncs, and runs the reboot
- * command. Detached because a reboot attached to a session once hung for
- * minutes (gotchas.md), and because plain `reboot` only signals PID 1, which
- * our init ignores: the default command is `reboot -f`. */
-static void reboot_later(struct panel *p, struct response *resp) {
+/* Returns at once, so the caller can reply (HTTP 202, or MQTT); a detached
+ * grandchild waits, syncs, and runs the reboot command. Detached because a
+ * reboot attached to a session once hung for minutes (gotchas.md), and
+ * because plain `reboot` only signals PID 1, which our init ignores: the
+ * default command is `reboot -f`. */
+int panel_reboot(struct panel *p) {
     sync();
     pid_t pid = fork();
-    if (pid < 0) {
-        resp_error(resp, 500, "reboot_failed", strerror(errno));
-        return;
-    }
+    if (pid < 0) return PANEL_ACTION_FAILED;
     if (pid == 0) {
         setsid();
         pid_t grandchild = fork();
@@ -244,6 +244,14 @@ static void reboot_later(struct panel *p, struct response *resp) {
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
     }
     fprintf(stderr, "tt7d: reboot requested; running '%s' in %d s\n", p->reboot_cmd, REBOOT_DELAY_S);
+    return PANEL_OK;
+}
+
+static void reboot_later(struct panel *p, struct response *resp) {
+    if (panel_reboot(p) != PANEL_OK) {
+        resp_error(resp, 500, "reboot_failed", strerror(errno));
+        return;
+    }
     resp->status = 202;
     sb_printf(&resp->body, "{\"rebooting\":true,\"delay\":{\"value\":%d,\"unit\":\"second\"}}", REBOOT_DELAY_S);
 }
@@ -418,8 +426,8 @@ void panel_handle(struct panel *p, const struct http_request *req, const uint8_t
     case R_SYSTEM: system_json(p, &resp->body); break;
     case R_LOGS: logs(p, req, resp); break;
     case R_BRIGHTNESS: set_brightness(p, body, len, resp); break;
-    case R_BLANK: blank(p, resp); break;
-    case R_WAKE: wake(p, resp); break;
+    case R_BLANK: action_reply(p, panel_blank(p), resp); break;
+    case R_WAKE: action_reply(p, panel_wake(p), resp); break;
     case R_TEST_PATTERN: test_pattern(p, resp); break;
     case R_REBOOT: reboot_later(p, resp); break;
     }

@@ -17,12 +17,13 @@
 
 /* Display operations that MQTT commands map to. Each is optional: a NULL
  * one makes its command answer "unsupported_command" and keeps its Home
- * Assistant entity out of discovery. They return 0 on success. The control
- * panel milestone (M4) owns the backlight and reboot code and wires these
- * up in main.c; MQTT never touches sysfs itself. */
+ * Assistant entity out of discovery. They return 0 on success. main.c wires
+ * them to the control panel's actions (panel.h), which own the backlight
+ * and reboot code; MQTT never writes sysfs itself. */
 struct mqtt_actions {
     void *ctx;
-    int (*set_brightness)(void *ctx, int percent); /* 0-100 */
+    /* value is a percentage (0-100) if percent, else a raw backlight level. */
+    int (*set_brightness)(void *ctx, long value, int percent);
     int (*wake)(void *ctx);
     int (*blank)(void *ctx);
     int (*reboot)(void *ctx);
@@ -63,6 +64,10 @@ int mqtt_app_init(struct mqtt_app *m, const char *data_dir, const char *sysfs_ro
 void mqtt_app_prepare(struct mqtt_app *m, struct pollfd *pfd, int64_t *wait_ms);
 void mqtt_app_service(struct mqtt_app *m, short revents);
 
+/* The display changed outside MQTT (an HTTP action): check and publish
+ * state on the next loop instead of within STATE_CHECK_MS. */
+void mqtt_app_state_changed(struct mqtt_app *m);
+
 /* A frame was accepted (PUT /api/v1/frame answered 200): event/frame. */
 void mqtt_app_frame_accepted(struct mqtt_app *m);
 
@@ -95,7 +100,8 @@ enum mqtt_command mqtt_command_of(const char *topic, const char *base);
 
 /* A cmd/brightness payload: "NN%" is a percentage (0-100), a plain "NN" a
  * raw backlight level (0 to backlight_max, 255 on the TT7). Surrounding
- * spaces are fine. Returns 0 with *percent set, or -1. */
-int mqtt_parse_brightness(const uint8_t *payload, size_t len, int backlight_max, int *percent);
+ * spaces are fine. Returns 0 with *value and *percent (1 for "NN%") set,
+ * or -1. */
+int mqtt_parse_brightness(const uint8_t *payload, size_t len, int backlight_max, long *value, int *percent);
 
 #endif

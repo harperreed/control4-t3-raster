@@ -303,7 +303,17 @@ static void app_on_reply(void *ctx, const struct http_request *req, const struct
         a->frames.last_error = resp->error;
     }
     if (is_frame_put(req) && resp->status == 200) mqtt_app_frame_accepted(&a->mqtt);
+    /* Brightness, blank, wake or the test pattern changed what MQTT reports. */
+    if (!strncmp(req->path, "/api/v1/display/", 16) && resp->status == 200) mqtt_app_state_changed(&a->mqtt);
 }
+
+/* MQTT commands run the control panel's own actions (panel.h). */
+static int mqtt_set_brightness(void *ctx, long value, int percent) {
+    return panel_set_brightness(ctx, value, percent) == PANEL_OK ? 0 : -1;
+}
+static int mqtt_blank(void *ctx) { return panel_blank(ctx) == PANEL_OK ? 0 : -1; }
+static int mqtt_wake(void *ctx) { return panel_wake(ctx) == PANEL_OK ? 0 : -1; }
+static int mqtt_reboot(void *ctx) { return panel_reboot(ctx) == PANEL_OK ? 0 : -1; }
 
 static void app_poll_prepare(void *ctx, struct pollfd *pfd, int64_t *wait_ms) {
     mqtt_app_prepare(&((struct app *)ctx)->mqtt, pfd, wait_ms);
@@ -356,9 +366,11 @@ int main(int argc, char **argv) {
     panel_init(&a.panel);
 
     /* MQTT after the display is up: a broker problem never delays the screen.
-     * No display operations are wired up yet (M4 adds them: see mqtt.h). */
+     * cmd/reboot stays refused unless allow_reboot_cmd is set (mqtt.c). */
+    struct mqtt_actions actions = {.ctx = &a.panel, .set_brightness = mqtt_set_brightness, .wake = mqtt_wake,
+                                   .blank = mqtt_blank, .reboot = mqtt_reboot};
     if (mqtt_app_init(&a.mqtt, a.cfg.data_dir, a.cfg.sysfs_root, a.device_id, FIRMWARE_VERSION " (" TT7D_VERSION ")",
-                      &a.frames, NULL, a.cfg.mqtt_flags, a.cfg.n_mqtt_flags, err, sizeof err) != 0) {
+                      &a.frames, &actions, a.cfg.mqtt_flags, a.cfg.n_mqtt_flags, err, sizeof err) != 0) {
         fprintf(stderr, "tt7d: %s\n", err);
         return 2;
     }

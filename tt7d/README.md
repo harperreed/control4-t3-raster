@@ -299,15 +299,15 @@ Base: `<prefix>/<device id>`, e.g. `tt7/tt7-7f38a2`.
 | Topic | Retained | Payload |
 |---|---|---|
 | `availability` | yes | `online` after connecting; the Last Will is `offline` |
-| `state` | yes | JSON, every `telemetry_interval`, and within 1 s of a change to the frame id, brightness, battery, power or IPs. Example below |
+| `state` | yes | JSON, every `telemetry_interval`, and within 1 s of a change to the frame id, brightness, battery, power or IPs; at once after an MQTT command or an HTTP display action. Example below |
 | `sensor/<name>` | yes | plain values: `uptime_s`, `battery_percent`, `charging` (`true`/`false`), `brightness` (percent), `frame_age_s`, `wifi_ip`, `ethernet_ip`; each only when known |
 | `event/boot` | no | `{"type":"boot","firmware_version":"0.1.0 (…)","uptime_s":41,"timestamp":"…"}`, once per daemon start, on the first connect |
 | `event/frame` | no | `{"type":"frame","frame_id":"…","sha256":"…","deduplicated":false,"timestamp":"…"}` for each accepted `PUT /frame` |
-| `event/error` | no | `{"type":"error","error":"unsupported_command","command":"wake","message":"…","timestamp":"…"}` |
+| `event/error` | no | `{"type":"error","error":"command_disabled","command":"reboot","message":"…","timestamp":"…"}` |
 | `event/button` | no | M3 publishes physical button events with `mqtt_app_event(m, "button", json)`. Touch stays off MQTT (the owner chose a WebSocket for it) |
-| `cmd/brightness` | (in) | `NN%` (0-100), or a raw level `NN` (0 to `max_brightness`, which is 255 here) |
-| `cmd/wake`, `cmd/blank` | (in) | anything |
-| `cmd/reboot` | (in) | anything; refused with `command_disabled` unless `allow_reboot_cmd=true` |
+| `cmd/brightness` | (in) | `NN%` (0-100), or a raw level `NN` (0 to `max_brightness`, which is 255 here), written as is |
+| `cmd/wake`, `cmd/blank` | (in) | anything; the same backlight actions as `POST /display/wake` and `/display/blank` |
+| `cmd/reboot` | (in) | anything; refused with `command_disabled` unless `allow_reboot_cmd=true`, else runs `--reboot-cmd` as `POST /system/reboot` does |
 
 ```json
 {"time":"2026-09-28T03:04:59.746Z","uptime_s":22162,"battery_percent":82,"battery_estimate":true,
@@ -324,12 +324,12 @@ retained, to every new subscription, so tt7d ignores commands that arrive
 with that flag; otherwise a retained `cmd/reboot` would reboot the panel on
 every reconnect.
 
-**Commands and M4.** On this branch tt7d has no brightness, wake, blank or
-reboot code; M4 (the control panel) adds it. MQTT reaches those operations
-only through `struct mqtt_actions` in `mqtt.h`, and `main.c` passes `NULL` for
-now. So every command answers `event/error` `unsupported_command`, and the
-matching HA controls are not advertised. When M4 merges, it fills in the
-struct in `main.c`, and `mqtt*.c` stays as it is.
+**Commands and the control panel.** MQTT reaches the display only through
+`struct mqtt_actions` in `mqtt.h`. `main.c` fills it with the control panel's
+actions (`panel_set_brightness`, `panel_blank`, `panel_wake`, `panel_reboot`
+in `panel.h`), so an MQTT command and the matching HTTP call run the same
+code, and blank then wake restores the level from before the blank either
+way. A failed action answers `event/error` `command_failed`.
 
 ### Home Assistant discovery
 
@@ -346,10 +346,10 @@ C4-TT7, `manufacturer` "Control4 (repurposed)", and `sw_version`. Each has
 | `sensor` battery ("Battery (estimate)", device class battery, %) and `binary_sensor` charging (battery_charging) | a Battery supply is present |
 | `sensor` uptime and frame age (duration, s, diagnostic) | always |
 | `sensor` Wi-Fi IP / Ethernet IP (diagnostic) | `wlan0` / `eth0` exists |
-| `sensor` brightness (%) | a backlight, and no brightness operation (this branch) |
-| `number` brightness (0-100 %, slider, sends `NN%` to `cmd/brightness`) | a backlight, and `set_brightness` wired (after M4) |
-| `button` wake, blank | the operation is wired (after M4) |
-| `button` reboot (device class restart) | wired (after M4), and `allow_reboot_cmd=true` |
+| `sensor` brightness (%) | a backlight, and no `set_brightness` action (not the case in this build) |
+| `number` brightness (0-100 %, slider, sends `NN%` to `cmd/brightness`) | a backlight |
+| `button` wake, blank | always (the actions are wired) |
+| `button` reboot (device class restart) | `allow_reboot_cmd=true` |
 
 Every connect publishes every entity: the real config if the entity is
 available, or an empty retained payload if not, which removes it. So

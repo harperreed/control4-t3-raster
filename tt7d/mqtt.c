@@ -44,7 +44,7 @@ enum mqtt_command mqtt_command_of(const char *topic, const char *base) {
     return CMD_NONE;
 }
 
-int mqtt_parse_brightness(const uint8_t *payload, size_t len, int backlight_max, int *percent) {
+int mqtt_parse_brightness(const uint8_t *payload, size_t len, int backlight_max, long *value, int *percent) {
     char buf[16];
     size_t a = 0, b = len;
     while (a < b && strchr(" \t\r\n", payload[a]) && payload[a]) a++;
@@ -57,13 +57,9 @@ int mqtt_parse_brightness(const uint8_t *payload, size_t len, int backlight_max,
     if (is_percent) buf[--n] = 0;
     if (n == 0 || n > 5 || strspn(buf, "0123456789") != n) return -1;
     long v = strtol(buf, NULL, 10);
-    if (is_percent) {
-        if (v > 100) return -1;
-        *percent = (int)v;
-        return 0;
-    }
-    if (backlight_max <= 0 || v > backlight_max) return -1;
-    *percent = (int)((v * 100 + backlight_max / 2) / backlight_max);
+    if (is_percent ? v > 100 : backlight_max <= 0 || v > backlight_max) return -1;
+    *value = v;
+    *percent = is_percent;
     return 0;
 }
 
@@ -418,10 +414,11 @@ static void on_message(void *ctx, const char *topic, const uint8_t *payload, siz
     int rc;
     switch (cmd) {
     case CMD_BRIGHTNESS: {
+        long value;
         int pct;
         struct sysinfo_values v;
         sysinfo_read(m->sysfs_root, &v);
-        if (mqtt_parse_brightness(payload, len, v.backlight_max, &pct) != 0) {
+        if (mqtt_parse_brightness(payload, len, v.backlight_max, &value, &pct) != 0) {
             command_error(m, name, "invalid_payload", "brightness wants NN% (0-100) or a raw level 0-max_brightness");
             return;
         }
@@ -429,7 +426,7 @@ static void on_message(void *ctx, const char *topic, const uint8_t *payload, siz
             command_error(m, name, "unsupported_command", "this tt7d build cannot set the brightness");
             return;
         }
-        rc = m->actions.set_brightness(m->actions.ctx, pct);
+        rc = m->actions.set_brightness(m->actions.ctx, value, pct);
         break;
     }
     case CMD_REBOOT:
@@ -590,6 +587,8 @@ void mqtt_app_event(struct mqtt_app *m, const char *type, const char *json) {
     else m->client.dropped++;
 }
 
+void mqtt_app_state_changed(struct mqtt_app *m) { m->next_check_ms = 0; }
+
 void mqtt_app_frame_accepted(struct mqtt_app *m) {
     const struct frame_store *fs = m->frames;
     struct timespec now;
@@ -629,14 +628,7 @@ void mqtt_app_state_member(struct mqtt_app *m, struct sbuf *sb) {
 /* ---- HTTP: /api/v1/config/mqtt --------------------------------------------- */
 
 int mqtt_http_check_head(const char *token, const struct http_request *req, struct response *resp) {
-    const char *auth = http_header(req, "Authorization");
-    const char *given = NULL;
-    if (auth && strncasecmp(auth, "Bearer ", 7) == 0) given = auth + 7 + strspn(auth + 7, " ");
-    if (!token_equal(token, given)) {
-        resp_error(resp, 401, "unauthorized", "/api/v1/config/mqtt needs Authorization: Bearer <token>");
-        snprintf(resp->extra_headers, sizeof resp->extra_headers, "WWW-Authenticate: Bearer realm=\"tt7d\"\r\n");
-        return -1;
-    }
+    if (resp_require_bearer(token, req, resp) != 0) return -1;
     if (strcmp(req->method, "PUT") != 0) return 0;
     const char *ct = http_header(req, "Content-Type");
     size_t n = ct ? strcspn(ct, "; \t") : 0;

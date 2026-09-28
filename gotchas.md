@@ -91,3 +91,4 @@
 - tt7d's MQTT `host` must be an IPv4 address: getaddrinfo() blocks, and the daemon has one poll() loop shared with the display.
 - The integration test uses amqtt as the broker and paho-mqtt as the client. Both are pinned in the Makefile and run with `uv run --no-project --with ...`. mosquitto is not installed, and installing it needs sudo.
 - Touch events stay off MQTT (owner decision, 2026-09-27): M3 sends them over a WebSocket. Only `event/button` has an MQTT hook.
+- After the M4+M5 merge (branch tt7d-m4-panel), MQTT `cmd/brightness|blank|wake|reboot` run the same `panel_*` actions as the HTTP routes (panel.h), so wake after an MQTT blank restores the old level. A raw `cmd/brightness NN` is written as is. `cmd/reboot` and the HA Reboot button still need `allow_reboot_cmd=true` (default false). Host-tested only; not yet run on the panel.

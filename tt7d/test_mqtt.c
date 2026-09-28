@@ -307,31 +307,32 @@ static void test_topics(void) {
     CHECK(mqtt_command_of("tt7/tt7-7f38a2", base) == CMD_NONE, "the base itself");
 }
 
-static int brightness(const char *payload, int max, int *pct) {
-    return mqtt_parse_brightness((const uint8_t *)payload, strlen(payload), max, pct);
+static int brightness(const char *payload, int max, long *value, int *percent) {
+    return mqtt_parse_brightness((const uint8_t *)payload, strlen(payload), max, value, percent);
 }
 
 static void test_brightness_payload(void) {
+    long v = -1;
     int pct = -1;
-    CHECK(brightness("50%", 255, &pct) == 0 && pct == 50, "percent: %d", pct);
-    CHECK(brightness(" 100% \n", 255, &pct) == 0 && pct == 100, "spaces: %d", pct);
-    CHECK(brightness("0%", 255, &pct) == 0 && pct == 0, "zero percent");
-    CHECK(brightness("255", 255, &pct) == 0 && pct == 100, "raw max: %d", pct);
-    CHECK(brightness("128", 255, &pct) == 0 && pct == 50, "raw 128 rounds to 50: %d", pct);
-    CHECK(brightness("0", 255, &pct) == 0 && pct == 0, "raw 0");
-    CHECK(brightness("1", 255, &pct) == 0 && pct == 0, "raw 1 rounds down: %d", pct);
-    CHECK(brightness("256", 255, &pct) == -1, "raw above max");
-    CHECK(brightness("101%", 255, &pct) == -1, "percent above 100");
-    CHECK(brightness("-1", 255, &pct) == -1, "negative");
-    CHECK(brightness("", 255, &pct) == -1, "empty");
-    CHECK(brightness("50%%", 255, &pct) == -1, "double percent");
-    CHECK(brightness("5 0", 255, &pct) == -1, "inner space");
-    CHECK(brightness("0x10", 255, &pct) == -1, "hex");
-    CHECK(brightness("12.5%", 255, &pct) == -1, "fraction");
-    CHECK(brightness("99999999999999999999", 255, &pct) == -1, "overflow");
-    CHECK(brightness("200", -1, &pct) == -1, "raw needs a known max");
-    CHECK(brightness("20%", -1, &pct) == 0 && pct == 20, "percent works without a max");
-    CHECK(mqtt_parse_brightness((const uint8_t *)"5\0" "0", 3, 255, &pct) == -1, "embedded NUL");
+    CHECK(brightness("50%", 255, &v, &pct) == 0 && v == 50 && pct == 1, "percent: %ld %d", v, pct);
+    CHECK(brightness(" 100% \n", 255, &v, &pct) == 0 && v == 100 && pct == 1, "spaces: %ld", v);
+    CHECK(brightness("0%", 255, &v, &pct) == 0 && v == 0 && pct == 1, "zero percent");
+    CHECK(brightness("255", 255, &v, &pct) == 0 && v == 255 && pct == 0, "raw max: %ld %d", v, pct);
+    CHECK(brightness("127", 255, &v, &pct) == 0 && v == 127 && pct == 0, "raw stays raw, no rounding: %ld", v);
+    CHECK(brightness("0", 255, &v, &pct) == 0 && v == 0 && pct == 0, "raw 0");
+    CHECK(brightness("1", 255, &v, &pct) == 0 && v == 1 && pct == 0, "raw 1: %ld", v);
+    CHECK(brightness("256", 255, &v, &pct) == -1, "raw above max");
+    CHECK(brightness("101%", 255, &v, &pct) == -1, "percent above 100");
+    CHECK(brightness("-1", 255, &v, &pct) == -1, "negative");
+    CHECK(brightness("", 255, &v, &pct) == -1, "empty");
+    CHECK(brightness("50%%", 255, &v, &pct) == -1, "double percent");
+    CHECK(brightness("5 0", 255, &v, &pct) == -1, "inner space");
+    CHECK(brightness("0x10", 255, &v, &pct) == -1, "hex");
+    CHECK(brightness("12.5%", 255, &v, &pct) == -1, "fraction");
+    CHECK(brightness("99999999999999999999", 255, &v, &pct) == -1, "overflow");
+    CHECK(brightness("200", -1, &v, &pct) == -1, "raw needs a known max");
+    CHECK(brightness("20%", -1, &v, &pct) == 0 && v == 20 && pct == 1, "percent works without a max");
+    CHECK(mqtt_parse_brightness((const uint8_t *)"5\0" "0", 3, 255, &v, &pct) == -1, "embedded NUL");
 }
 
 int main(void) {

@@ -240,11 +240,10 @@ def test_discovery(snap, device_id, base):
         return json.loads(raw) if raw else None
 
     present = {("sensor", "battery"), ("binary_sensor", "charging"), ("sensor", "uptime"), ("sensor", "frame_age"),
-               ("sensor", "wifi_ip"), ("sensor", "brightness")}
-    # Absent on this branch: no Ethernet in the fixture, no brightness setter,
-    # wake/blank/reboot operations (M4), and allow_reboot_cmd is off.
-    absent = {("sensor", "ethernet_ip"), ("number", "brightness"), ("button", "wake"), ("button", "blank"),
-              ("button", "reboot")}
+               ("sensor", "wifi_ip"), ("number", "brightness")}
+    # Absent: no Ethernet in the fixture; the read-only brightness sensor,
+    # since the number entity sets it; reboot, since allow_reboot_cmd is off.
+    absent = {("sensor", "ethernet_ip"), ("sensor", "brightness"), ("button", "reboot")}
     for component, obj in present:
         c = config(component, obj)
         assert c, f"no discovery config for {component}/{obj}"
@@ -260,6 +259,11 @@ def test_discovery(snap, device_id, base):
     assert "estimate" in config("sensor", "battery")["name"].lower()
     assert config("binary_sensor", "charging")["device_class"] == "battery_charging"
     assert config("sensor", "uptime")["unit_of_measurement"] == "s"
+    number = config("number", "brightness")
+    assert number["command_topic"] == f"{base}/cmd/brightness" and number["max"] == 100, number
+    for obj in ("wake", "blank"):
+        c = config("button", obj)
+        assert c and c["command_topic"] == f"{base}/cmd/{obj}" and c["unique_id"] == f"{device_id}_{obj}", (obj, c)
 
 
 def test_frames_and_commands(d, obs, base):
@@ -278,25 +282,105 @@ def test_frames_and_commands(d, obs, base):
         p, _ = obs.expect(f"{base}/event/error", lambda p, r: json.loads(p)["command"] == cmd, timeout=5)
         return json.loads(p)["error"]
 
-    assert error_for("wake", "PRESS") == "unsupported_command"
-    assert error_for("blank", "") == "unsupported_command"
-    assert error_for("brightness", "40%") == "unsupported_command"
     assert error_for("brightness", "bright") == "invalid_payload"
+    assert error_for("brightness", "256") == "invalid_payload"  # raw above max_brightness
     assert error_for("reboot", "PRESS") == "command_disabled"
+    time.sleep(1.5)  # the reboot command would have run after 1 s
+    assert not os.path.exists(d.reboot_marker), "cmd/reboot ran with allow_reboot_cmd off"
 
     # A retained command is only taken live. The broker hands it over again,
     # flagged retained, on every new subscription (MQTT 3.1.1 section
     # 3.3.1.3), and tt7d must not act on that replay: for cmd/reboot it
     # would mean a reboot loop.
-    assert error_for("wake", "PRESS", retain=True) == "unsupported_command"
+    assert error_for("reboot", "PRESS", retain=True) == "command_disabled"
     d.stop()
     obs.drain()
     d.start()
     obs.expect(f"{base}/availability", lambda p, r: p == "online")
     time.sleep(1.5)
     replies = [m for m in obs.drain() if m[0] == f"{base}/event/error"]
-    obs.publish(f"{base}/cmd/wake", "", retain=True)  # clear it from the broker
+    obs.publish(f"{base}/cmd/reboot", "", retain=True)  # clear it from the broker
     assert not replies, f"tt7d acted on a replayed retained command: {replies}"
+
+
+# How long tt7d may take to publish a state change: it compares state every
+# second (STATE_CHECK_MS in mqtt.c); commands and HTTP display actions ask
+# for an immediate check. The slack covers loopback and the ASan build.
+CHANGE_WINDOW_S = 1.5
+
+
+def backlight(d):
+    with open(os.path.join(d.backlight, "brightness")) as f:
+        return int(f.read().strip())
+
+
+def test_display_commands(d, obs, base):
+    def state_where(pred):
+        obs.expect(f"{base}/state", lambda p, r: pred(json.loads(p)), timeout=CHANGE_WINDOW_S)
+
+    def command(cmd, payload):
+        obs.drain()
+        obs.publish(f"{base}/cmd/{cmd}", payload)
+
+    # cmd/brightness as a percentage and as a raw level both reach the backlight file.
+    command("brightness", "40%")
+    wait_for("cmd/brightness 40% on the backlight", lambda: backlight(d) == 102, timeout=5)  # 40 % of 255
+    state_where(lambda s: s["brightness"] == 40 and s["display_on"] is True)
+    command("brightness", "200")
+    wait_for("cmd/brightness 200 on the backlight", lambda: backlight(d) == 200, timeout=5)  # raw, not rounded
+    state_where(lambda s: s["brightness"] == 78)
+
+    # HTTP changes show up in MQTT state within the change window.
+    obs.drain()
+    status, _, body = d.request("PUT", "/api/v1/display/brightness", body=b'{"value": 30, "unit": "percent"}',
+                                headers={**d.auth(), "Content-Type": "application/json"})
+    assert status == 200, body
+    assert backlight(d) == 77, backlight(d)
+    state_where(lambda s: s["brightness"] == 30)
+    status, _, body = d.request("POST", "/api/v1/display/blank", body=b"", headers=d.auth())
+    assert status == 200, body
+    state_where(lambda s: s["display_on"] is False)
+    status, _, body = d.request("POST", "/api/v1/display/wake", body=b"", headers=d.auth())
+    assert status == 200, body
+    state_where(lambda s: s["display_on"] is True and s["brightness"] == 30)
+
+    # cmd/blank then cmd/wake round-trips to the level before the blank.
+    command("blank", "PRESS")
+    wait_for("cmd/blank on the backlight", lambda: backlight(d) == 0, timeout=5)
+    state_where(lambda s: s["display_on"] is False)
+    command("wake", "PRESS")
+    wait_for("cmd/wake on the backlight", lambda: backlight(d) == 77, timeout=5)
+    state_where(lambda s: s["display_on"] is True and s["brightness"] == 30)
+    errors = [m for m in obs.drain() if m[0] == f"{base}/event/error"]
+    assert not errors, errors
+
+
+def test_reboot_allowed(d, obs, base):
+    device_id = d.device_id()
+    reboot_config = f"homeassistant/button/{device_id}/reboot/config"
+    assert not os.path.exists(d.reboot_marker)
+    status, doc = put_config(d, {"allow_reboot_cmd": True})
+    assert status == 200 and doc["allow_reboot_cmd"] is True, doc
+    obs.expect(reboot_config, lambda p, r: p and json.loads(p)["command_topic"] == f"{base}/cmd/reboot", timeout=10)
+    wait_for("reconnect after the change", lambda: d.mqtt_state()["connected"])
+    obs.drain()
+    obs.publish(f"{base}/cmd/reboot", "PRESS")
+    wait_for("the --reboot-cmd marker", lambda: os.path.exists(d.reboot_marker), timeout=5)
+    errors = [m for m in obs.drain() if m[0] == f"{base}/event/error"]
+    assert not errors, errors
+    os.unlink(d.reboot_marker)
+
+    # Off again: the Reboot button leaves Home Assistant, and the command is refused.
+    status, doc = put_config(d, {"allow_reboot_cmd": False})
+    assert status == 200 and doc["allow_reboot_cmd"] is False, doc
+    obs.expect(reboot_config, lambda p, r: p == "", timeout=10)
+    wait_for("reconnect after the change", lambda: d.mqtt_state()["connected"])
+    obs.drain()
+    obs.publish(f"{base}/cmd/reboot", "PRESS")
+    p, _ = obs.expect(f"{base}/event/error", lambda p, r: json.loads(p)["command"] == "reboot", timeout=5)
+    assert json.loads(p)["error"] == "command_disabled", p
+    time.sleep(1.5)
+    assert not os.path.exists(d.reboot_marker), "cmd/reboot ran after allow_reboot_cmd went back off"
 
 
 def test_lwt(d, obs, base):
@@ -451,6 +535,10 @@ def main():
             test_discovery(snap, d.device_id(), base)
             steps.append("event/frame, state on change, commands, retained commands ignored")
             test_frames_and_commands(d, obs, base)
+            steps.append("cmd/brightness (percent, raw), cmd/blank, cmd/wake on the backlight; HTTP changes in state")
+            test_display_commands(d, obs, base)
+            steps.append("allow_reboot_cmd: HA Reboot button, cmd/reboot runs --reboot-cmd; off again: refused")
+            test_reboot_allowed(d, obs, base)
             steps.append("kill tt7d: the broker delivers the retained LWT offline")
             test_lwt(d, obs, base)
             steps.append("broker down: frames still shown; broker back: tt7d reconnects")
