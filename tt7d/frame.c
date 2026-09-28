@@ -144,7 +144,7 @@ void frame_put(struct frame_store *fs, const struct http_request *req, const uin
 void frame_show(struct frame_store *fs, const uint8_t *body, size_t len, const char *sha, const char *id,
                 int persist, struct response *resp) {
     /* Same pixels as on screen: no decode, no redraw; only the receipt changes. */
-    if (fs->have && strcmp(sha, fs->sha256) == 0) {
+    if (fs->have && fs->on_screen && strcmp(sha, fs->sha256) == 0) {
         if (persist && !fs->persisted && persist_write(fs, body, len, sha, id) != 0) {
             resp_error(resp, 500, "persist_failed", strerror(errno));
             return;
@@ -183,6 +183,7 @@ void frame_show(struct frame_store *fs, const uint8_t *body, size_t len, const c
     fs->png = copy;
     fs->png_len = len;
     fs->have = 1;
+    fs->on_screen = 1;
     snprintf(fs->id, sizeof fs->id, "%s", id);
     snprintf(fs->sha256, sizeof fs->sha256, "%s", sha);
     now_both(&fs->received_at, &fs->received_mono);
@@ -241,6 +242,7 @@ int frame_restore(struct frame_store *fs, size_t max_bytes, char *err, size_t er
     display_present(fs->disp);
 
     fs->have = 1;
+    fs->on_screen = 1;
     fs->png = png;
     fs->png_len = len;
     sha256_hex(png, len, fs->sha256);

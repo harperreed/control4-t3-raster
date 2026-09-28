@@ -197,6 +197,8 @@ def test_info_and_empty_state(d):
     assert state["display"]["brightness"] == {"value": 50, "unit": "percent", "available": True}
     assert state["power"]["battery_percent"]["estimate"] is True
     assert state["frames"] == {"accepted": 0, "deduplicated": 0, "rejected": 0, "last_error": None}
+    assert state["fallback"] == {"active": False, "reason": None, "timeout_s": 0, "since": None}, state["fallback"]
+    assert state["clock"]["timezone"] == "CST6CDT,M3.2.0,M11.1.0" and state["clock"]["format"] == "24h", state["clock"]
     assert isinstance(state["uptime_s"], (int, float)) and re.fullmatch(r"\d{4}-\d\d-\d\dT.*Z", state["time"])
 
     check_error(d.request("GET", "/api/v1/frame"), 404, "no_frame")
@@ -472,6 +474,7 @@ def test_system(d):
     assert storage["path"] == d.data and storage["total"] == {"value": st.f_blocks * st.f_frsize, "unit": "byte"}
     assert sysd["time"]["plausible"] is (time.gmtime().tm_year >= 2024), sysd["time"]
     assert sysd["time"]["timezone"] == "UTC" and isinstance(sysd["uptime_s"], int)
+    assert sysd["time"]["synchronized"] is False, "no NTP sync marker in this test"
 
 
 def test_brightness(d):
@@ -590,7 +593,9 @@ def main():
     binary = os.path.abspath(args.daemon)
 
     with tempfile.TemporaryDirectory(prefix="tt7d-e2e-") as workdir:
-        d = Daemon(binary, workdir)
+        # The fallback clock off: these steps check an untouched framebuffer
+        # before the first frame. tt7d/test_fallback_e2e.py covers the clock.
+        d = Daemon(binary, workdir, ["--fallback-timeout", "0", "--ntp-marker", os.path.join(workdir, "ntp-synced")])
         steps = []
         try:
             d.start()

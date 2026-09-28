@@ -31,16 +31,20 @@ HOST_CFLAGS  := -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefin
 TT7D_ASSETS_C := $(B)/gen/tt7d_assets.c
 TT7D_LIB     := tt7d/json.c tt7d/http.c tt7d/render.c tt7d/sha256.c tt7d/ident.c tt7d/sysinfo.c probe/fbdraw.c \
                 tt7d/control.c tt7d/hardware.c tt7d/assets.c $(TT7D_ASSETS_C) \
-                tt7d/server.c tt7d/mqtt_packet.c tt7d/mqtt_config.c tt7d/mqtt_client.c tt7d/mqtt.c
-TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/panel.c tt7d/main.c
+                tt7d/server.c tt7d/mqtt_packet.c tt7d/mqtt_config.c tt7d/mqtt_client.c tt7d/mqtt.c \
+                tt7d/fallback.c tt7d/timesync.c tt7d/font.c tt7d/clockface.c
+TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/panel.c tt7d/fallback_screen.c tt7d/main.c
 TT7D_WEB     := tt7d/web/index.html tt7d/web/panel.css tt7d/web/panel.js
-TT7D_HDRS    := $(wildcard tt7d/*.h) probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h third_party/lodepng/lodepng.h
-TT7D_INC     := -Itt7d -Iprobe -I$(FONT_DIR) -Ithird_party/lodepng
+TT7D_HDRS    := $(wildcard tt7d/*.h) probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h third_party/lodepng/lodepng.h \
+                third_party/stb/stb_truetype.h
+TT7D_INC     := -Itt7d -Iprobe -I$(FONT_DIR) -Ithird_party/lodepng -Ithird_party/stb
+# The fallback clock's typefaces (third_party/fonts/inter/PROVENANCE), embedded like the web assets.
+TT7D_FONTS   := third_party/fonts/inter/InterDisplay-Light.ttf third_party/fonts/inter/Inter-Regular.ttf
 LODEPNG      := third_party/lodepng/lodepng.cpp
-LODEPNG_DEFS := -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP \
+LODEPNG_DEFS := -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP \
                 -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS
 TT7D_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
-TT7D_UNITS   := render json http util sysinfo control hardware assets mqtt
+TT7D_UNITS   := render json http util sysinfo control hardware assets mqtt fallback timesync clockface
 
 .PHONY: all image busybox dropbear wifi tt7d test-host test-e2e test-mqtt check clean FORCE
 .DELETE_ON_ERROR:
@@ -81,10 +85,11 @@ $(B)/gen/test-pattern.png: tools/make-test-frame.py $(FONT_DIR)/font8x8_basic.h
 	python3 tools/make-test-frame.py $@ --label "tt7d test pattern" --stamp "BUILT-IN" > /dev/null
 
 # Files compiled into tt7d: URL paths start with '/', internal names do not.
-$(TT7D_ASSETS_C): tt7d/embed.py $(TT7D_WEB) $(B)/gen/test-pattern.png
+$(TT7D_ASSETS_C): tt7d/embed.py $(TT7D_WEB) $(B)/gen/test-pattern.png $(TT7D_FONTS)
 	@mkdir -p $(B)/gen
 	python3 tt7d/embed.py $@ /=tt7d/web/index.html /panel.css=tt7d/web/panel.css /panel.js=tt7d/web/panel.js \
-		test-pattern.png=$(B)/gen/test-pattern.png
+		test-pattern.png=$(B)/gen/test-pattern.png \
+		font-time.ttf=third_party/fonts/inter/InterDisplay-Light.ttf font-text.ttf=third_party/fonts/inter/Inter-Regular.ttf
 
 # The display daemon for the panel. lodepng is compiled as C (third_party/lodepng/PROVENANCE).
 $(B)/tt7d: $(TT7D_SRCS) $(TT7D_HDRS) $(LODEPNG) $(B)/tt7d.version
@@ -106,7 +111,7 @@ $(B)/stock/kernel.img: $(STOCK_BOOT) scripts/bootimg.py $(MKBOOTIMG)
 
 ROOTFS_INPUTS := $(B)/init $(B)/tt7probe $(B)/tt7d $(B)/busybox/busybox $(B)/dropbear/dropbearmulti \
                  $(B)/wifi/wpa_supplicant $(B)/stock/kernel.img \
-                 probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh \
+                 probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh probe/tt7-ntp-hook.sh \
                  scripts/stage-rootfs.sh $(SSH_PUBKEY) $(shell find third_party/mmkeypad/rootfs -type f)
 
 $(B)/ramdisk.cpio.gz: $(ROOTFS_INPUTS) $(MKCPIO)
@@ -130,7 +135,12 @@ $(B)/host/test_usb_stall: init/test_usb_stall.c init/usb_stall.c init/usb_stall.
 
 $(B)/host/test_%: tt7d/test_%.c tt7d/test_common.h $(TT7D_LIB) $(TT7D_HDRS)
 	@mkdir -p $(B)/host
-	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(TT7D_INC) -DFIXTURE='"tt7d/test/fixtures/sysfs-tt7"' -o $@ $< $(TT7D_LIB)
+	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(TT7D_INC) -DFIXTURE='"tt7d/test/fixtures/sysfs-tt7"' -o $@ $< $(TT7D_LIB) -lm
+
+# The clock face test also writes its renders as PNGs (build/host/clockface-*.png) for a human to look at.
+$(B)/host/test_clockface: tt7d/test_clockface.c tt7d/test_common.h $(TT7D_LIB) $(TT7D_HDRS) $(B)/host/lodepng.o
+	@mkdir -p $(B)/host
+	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(TT7D_INC) -o $@ $< $(TT7D_LIB) $(B)/host/lodepng.o -lm
 
 # Host build of the real daemon for the end-to-end test. lodepng is compiled
 # as C (see third_party/lodepng/PROVENANCE).
@@ -140,16 +150,18 @@ $(B)/host/lodepng.o: $(LODEPNG) third_party/lodepng/lodepng.h
 
 $(B)/host/tt7d: $(TT7D_SRCS) $(TT7D_HDRS) $(B)/host/lodepng.o $(B)/tt7d.version
 	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(TT7D_INC) $(LODEPNG_DEFS) -DTT7D_VERSION='"$(TT7D_VERSION)"' \
-		-o $@ $(TT7D_SRCS) $(B)/host/lodepng.o
+		-o $@ $(TT7D_SRCS) $(B)/host/lodepng.o -lm
 
 test-host: $(B)/host/test_fbdraw $(B)/host/test_usb_stall $(TT7D_UNITS:%=$(B)/host/test_%)
 	$(B)/host/test_fbdraw
 	$(B)/host/test_usb_stall
 	@for t in $(TT7D_UNITS); do $(B)/host/test_$$t || exit 1; done
 
-# Runs the real host-built daemon on a file-backed framebuffer (tt7d/test_e2e.py).
+# Runs the real host-built daemon on a file-backed framebuffer (tt7d/test_e2e.py, and
+# tt7d/test_fallback_e2e.py for the fallback clock).
 test-e2e: $(B)/host/tt7d
 	python3 tt7d/test_e2e.py --daemon $(B)/host/tt7d
+	python3 tt7d/test_fallback_e2e.py --daemon $(B)/host/tt7d
 
 # The real daemon against a real MQTT broker (amqtt) and client (paho-mqtt),
 # both pinned and run through uv (tt7d/test_mqtt_e2e.py).
@@ -160,8 +172,8 @@ test-mqtt: $(B)/host/tt7d
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
                  scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \
                  scripts/build-wpa.sh scripts/wifi-setup.sh scripts/test-wifi-setup.sh \
-                 tools/push-frame.sh tools/mqtt-setup.sh
-DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh
+                 tools/push-frame.sh tools/mqtt-setup.sh tools/subset-fonts.sh
+DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh probe/tt7-ntp-hook.sh
 # A system shellcheck if there is one, else the pinned PyPI build through uv.
 SHELLCHECK := $(shell command -v shellcheck 2>/dev/null || echo "uvx --from shellcheck-py==0.11.0.1 shellcheck")
 

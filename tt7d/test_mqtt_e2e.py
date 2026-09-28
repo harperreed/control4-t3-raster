@@ -33,7 +33,7 @@ import test_e2e  # noqa: E402 - the frame helpers and the Daemon wrapper
 PASSWORD = "c0rrect-h0rse \"battery\" staple\\"
 USER = "tt7"
 STATE_KEYS = {"time", "uptime_s", "battery_percent", "battery_estimate", "charging", "external_power", "brightness",
-              "display_on", "wifi_ip", "ethernet_ip", "frame_id", "frame_age_s", "last_touch"}
+              "display_on", "wifi_ip", "ethernet_ip", "frame_id", "frame_age_s", "fallback", "last_touch"}
 
 
 def free_port():
@@ -216,7 +216,12 @@ def test_connect_state_and_boot(d, obs, base):
     doc = json.loads(state)
     assert set(doc) == STATE_KEYS, f"state keys {sorted(doc)}"
     assert doc["battery_percent"] == 82 and doc["battery_estimate"] is True, doc
-    assert doc["brightness"] == 50 and doc["frame_id"] is None and doc["frame_age_s"] is None, doc
+    assert doc["brightness"] == 50, doc
+    # No frame yet, so the fallback clock is what the screen shows (SPEC 41.1).
+    assert doc["frame_id"].startswith("fallback-clock-") and doc["frame_age_s"] >= 0, doc
+    fb = doc["fallback"]
+    assert fb["active"] is True and fb["reason"] == "no_frame_since_boot" and fb["timeout_s"] == 300, fb
+    assert fb["since"].endswith("Z"), fb
     assert doc["charging"] is False and doc["last_touch"] is None, doc
 
     # Everything tt7d announces at connect, discovery included.
@@ -275,6 +280,7 @@ def test_frames_and_commands(d, obs, base):
     assert doc["frame_id"] == "mqtt-1" and doc["deduplicated"] is False and not retain, (doc, retain)
     state, _ = obs.expect(f"{base}/state", lambda p, r: json.loads(p)["frame_id"] == "mqtt-1", timeout=5)
     assert json.loads(state)["frame_age_s"] < 5
+    assert json.loads(state)["fallback"]["active"] is False, "a frame ends the fallback clock"
 
     def error_for(cmd, payload, retain=False):
         obs.drain()

@@ -16,7 +16,8 @@ struct frame_store {
     const char *data_dir;
     struct display *disp;
 
-    int have;             /* a frame is on screen */
+    int have;             /* a frame has been shown (it may be covered by the fallback clock) */
+    int on_screen;        /* that frame is what the screen shows now; the fallback clears it */
     char id[129];         /* "" when unknown (a restored frame without its id file) */
     char sha256[65];
     uint8_t *png;         /* the PNG as received, for GET /frame/image */

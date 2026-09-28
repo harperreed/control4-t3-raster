@@ -8,7 +8,7 @@
   4. the ramdisk: listing, root ownership, required files, no stray write bits
   5. authorized_keys is exactly the owner's key and no other public key is anywhere in the ramdisk
   6. `file` says static ARM EABI5 for every executable; the NAND module matches the kernel version;
-     tt7-app starts tt7d and the input-only logger
+     tt7-app starts tt7d and the input-only logger, and discovery only in the background; ntpd and its hook
 """
 import argparse
 import gzip
@@ -40,6 +40,7 @@ REQUIRED = {
     "usr/bin/tt7-app": "file",
     "usr/bin/tt7-discover": "file",
     "usr/bin/tt7-wifi-start": "file",
+    "usr/bin/tt7-ntp-hook": "file",
     "usr/sbin/wpa_supplicant": "file",
     "usr/sbin/wpa_cli": "file",
     "lib/modules/rk30xxnand_ko.ko": "file",
@@ -195,6 +196,22 @@ def main():
     app = entries.get("usr/bin/tt7-app", (0, 0, 0, b""))[3]
     r.check(b"tt7d --data-dir" in app and b"tt7probe log" in app and b"tt7probe run" not in app,
             "tt7-app runs tt7d and the input-only logger, not the test pattern")
+    # SPEC 38: tt7d (and its fallback clock) must not wait for discovery. Every
+    # tt7-discover call is a background job, and the tt7d loop is the last thing.
+    discover_calls = re.findall(rb"^.*\btt7-discover \"\$out\".*$", app, re.M)
+    r.check(bool(discover_calls) and all(re.match(rb"\s*\(tt7-discover .*\) &$", c) for c in discover_calls),
+            "tt7-app runs discovery in the background, so tt7d starts before it finishes")
+    r.check(app.rstrip().endswith(b"done") and app.rfind(b"tt7d --data-dir") > app.rfind(b"tt7-discover"),
+            "tt7-app ends in the tt7d loop")
+    r.check(b"exec ntpd -n -S \"$hook\"" in app and b"command -v tt7-ntp-hook" in app,
+            "tt7-app starts ntpd with the tt7-ntp-hook sync hook")
+    ntpd = entries.get("usr/sbin/ntpd")
+    r.check(bool(ntpd) and stat.S_ISLNK(ntpd[0]) and ntpd[3] == b"/bin/busybox", "ntpd is a BusyBox applet in the ramdisk")
+    busybox = entries.get("bin/busybox", (0, 0, 0, b""))[3]
+    # run_script() puts freq_drift_ppm in the hook's env (usage text is compressed, so not searchable).
+    r.check(b"freq_drift_ppm" in busybox, "BusyBox ntpd has the -S hook (run_script)")
+    hook = entries.get("usr/bin/tt7-ntp-hook", (0, 0, 0, b""))[3]
+    r.check(b"/run/tt7/ntp-synced" in hook, "tt7-ntp-hook writes /run/tt7/ntp-synced")
     tt7d = entries.get("usr/bin/tt7d", (0, 0, 0, b""))[3]
     r.check(b"/api/v1/frame" in tt7d, "tt7d serves /api/v1/frame")
     ko = entries.get("lib/modules/rk30xxnand_ko.ko", (0, 0, 0, b""))[3]

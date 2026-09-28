@@ -17,6 +17,7 @@ struct panel {
     const char *data_dir;
     const char *log_file;   /* tt7d's own log (tt7-app sends its stderr there) */
     const char *reboot_cmd; /* run with /bin/sh -c by a detached child */
+    const char *ntp_marker; /* for /system time.synchronized; NULL reports null */
     const char *token;
     const char *firmware_version, *build;
     struct display *disp;

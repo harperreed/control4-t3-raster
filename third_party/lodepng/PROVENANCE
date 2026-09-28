@@ -1,4 +1,4 @@
-lodepng: PNG decoder (single file) vendored for tt7d.
+lodepng: PNG decoder and encoder (single file) vendored for tt7d.
 
 Source:   https://github.com/lvandeve/lodepng
 Commit:   ed6fe5825c6a4fbb7f58ab35a4231c7543cd452a (repo HEAD on 2026-09-27)
@@ -13,5 +13,7 @@ bdafa318b8e637d600ca1b60545e894881977a16a16b74809c95e805701621e3  LICENSE
 
 Build: compiled as C with `-x c` (upstream documents renaming lodepng.cpp to
 lodepng.c for C; `-x c` does the same without touching the file) and
--DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP
--DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS. See the top-level Makefile.
+-DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP
+-DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS. The encoder is compiled in (since 2026-09-28)
+for the fallback clock's preview PNG (tt7d/fallback_screen.c) and the clock face
+test's renders. See the top-level Makefile.

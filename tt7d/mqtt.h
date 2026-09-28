@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "fallback_screen.h"
 #include "frame.h"
 #include "http.h"
 #include "json.h"
@@ -41,6 +42,7 @@ struct mqtt_app {
     char device_id[32];
     const char *sw_version;
     const struct frame_store *frames;
+    const struct fallback_screen *screen; /* set by main after init; NULL = no fallback clock */
     struct mqtt_actions actions;
     struct mqtt_client client;
     char base[160]; /* "<prefix>/<device id>" */
