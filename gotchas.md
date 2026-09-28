@@ -84,3 +84,11 @@
 - CSS `display:` rules on a class beat the `hidden` attribute. The panel's CSS has `[hidden] { display: none !important; }` for this; without it the unlock form and a broken preview image stayed visible.
 - `GET /api/v1/logs` needs the token (SPEC §36: diagnostics are authenticated). The panel checks a pasted token against it before keeping the token.
 - The built-in test pattern is `tools/make-test-frame.py --stamp BUILT-IN` output embedded at build time, so builds stay reproducible. Without `--stamp` the PNG carries the current time.
+
+## Camera tool tt7cam (2026-09-27, branch cam-spike; built and host-tested only)
+- `make cam` builds `build/tt7cam` (static ARM, not in the boot image). It captures through V4L2_MEMORY_OVERLAY with an ION buffer's physical address, per MMKeypad CAMERA.md. Every kernel struct and ioctl number lives in `cam/kabi.h`, transcribed from the Rockchip 3.0.36 tree (Nu3001/kernel_rk3188), not from zig's headers. Control4's glassedge source is not public, so none of it is checked against our exact kernel.
+- The RK3188 SDK board file registers one ION heap: a CARVEOUT with id 0 (ION_NOR_HEAP_ID), 120M on 1G boards. Our dmesg matches ("reserved for <ion>", 120M). ION_IOC_ALLOC's flags field is a heap mask, `1 << id`.
+- `ION_CUSTOM_CACHE_OP` returns 0 even when it fails (ion.c drops `err`); the only trace is a dmesg line "has not been maped". The carveout mapping is cached, so a failed invalidate could make a real capture look untouched (0xAA).
+- zig's musl `ioctl()` has a time64 fallback that swaps the 80-byte VIDIOC_QBUF number for the 68-byte one, but only when the kernel answers ENOTTY. MMKeypad saw EINVAL, so don't count on it; use kabi.h's numbers.
+- Our kernel has `rk29_ipp` loaded (boot-0004 modules.txt), unlike MMKeypad's custom Linux, so the ipp_blit_sync no-op trap should not bite. `tt7cam probe` checks anyway.
+- Vendored `third_party/stb/stb_image_write.h` carries a one-line fix for undefined behaviour (a signed shift in the JPEG bit writer). Its PROVENANCE has the diff.
