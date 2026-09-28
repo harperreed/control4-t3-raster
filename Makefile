@@ -62,7 +62,7 @@ CAM_UNITS := kabi yuv sentinel motion jpeg
 # Pinned Pillow decodes tt7cam's JPEG in the host end-to-end test.
 CAM_PILLOW := uv run --quiet --no-project --with pillow==12.3.0 python3
 
-.PHONY: all image busybox dropbear wifi tt7d cam bundle test-host test-e2e test-mqtt test-input test-camera test-cam test-update check clean FORCE
+.PHONY: all image busybox dropbear wifi tt7d cam bundle test-host test-e2e test-mqtt test-input test-camera test-cam test-update server server-check check clean FORCE
 .DELETE_ON_ERROR:
 
 all: image
@@ -240,6 +240,23 @@ test-update: $(B)/host/tt7d $(B)/tt7d $(B)/tt7probe
 bundle: $(B)/tt7d $(B)/tt7probe
 	tools/make-bundle.sh
 
+# tt7-server (server/): the Go backend that drives N panels from one headless Chrome.
+# Its e2e runs two host tt7d daemons and a real Chrome; with no Chrome at CHROME it fails.
+GO     := $(shell mise which go 2>/dev/null)
+CHROME ?= $(HOME)/.agent-browser/browsers/chrome-154.0.8037.57/chrome
+
+server: $(B)/server/tt7-server
+
+# go build is incremental on its own, so this always asks it.
+$(B)/server/tt7-server: FORCE
+	@test -n "$(GO)" || { echo "go not found via mise: run \`mise install\` (mise.toml pins go)"; exit 1; }
+	@mkdir -p $(B)/server
+	cd server && $(GO) build -o ../$@ ./cmd/tt7-server
+
+server-check: $(B)/server/tt7-server $(B)/host/tt7d
+	cd server && $(GO) vet ./... && $(GO) test ./...
+	python3 server/test_server_e2e.py --daemon $(B)/host/tt7d --server $(B)/server/tt7-server --chrome $(CHROME)
+
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
                  scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \
                  scripts/build-wpa.sh scripts/wifi-setup.sh scripts/test-wifi-setup.sh \
@@ -248,7 +265,7 @@ DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh
 # A system shellcheck if there is one, else the pinned PyPI build through uv.
 SHELLCHECK := $(shell command -v shellcheck 2>/dev/null || echo "uvx --from shellcheck-py==0.11.0.1 shellcheck")
 
-check: test-host test-e2e test-mqtt test-input test-camera test-cam test-update $(IMAGE)
+check: test-host test-e2e test-mqtt test-input test-camera test-cam test-update server-check $(IMAGE)
 	python3 scripts/check-image.py --image $(IMAGE) --stock $(STOCK_BOOT) --pubkey $(SSH_PUBKEY)
 	@for s in $(SHELL_SCRIPTS); do bash -n $$s || exit 1; done; echo "  ok   bash -n: $(SHELL_SCRIPTS)"
 	@for s in $(DEVICE_SCRIPTS); do sh -n $$s || exit 1; done; echo "  ok   sh -n: $(DEVICE_SCRIPTS)"

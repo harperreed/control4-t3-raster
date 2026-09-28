@@ -21,7 +21,7 @@ func TestTouchMapping(t *testing.T) {
 		{Touch{"move", 0, 110, 210}, true, Mouse{input.MouseMoved, 110, 210}},
 		{Touch{"up", 3, 910, 700}, false, Mouse{}},
 		{Touch{"up", 0, 120, 220}, true, Mouse{input.MouseReleased, 120, 220}},
-		{Touch{"move", 0, 1, 1}, false, Mouse{}},                                 // no finger down any more
+		{Touch{"move", 0, 1, 1}, false, Mouse{}},                               // no finger down any more
 		{Touch{"down", 5, 2000, -4}, true, Mouse{input.MousePressed, 1279, 0}}, // clamped
 		{Touch{"up", 5, 2000, -4}, true, Mouse{input.MouseReleased, 1279, 0}},
 		{Touch{"wiggle", 0, 1, 1}, false, Mouse{}},
