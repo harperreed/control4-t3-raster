@@ -1,0 +1,12 @@
+# Golden vector for PATCH /api/v1/frame (SPEC §10.1): regions-v1.bin is one request body.
+# Written by: cd server && go test ./internal/regions -run TestGoldenVector -update
+# Checked by: server/internal/regions/container_test.go and tt7d/test_regions.c.
+# The base frame is 1280x800 with pixel (x, y) = RGBA(x mod 256, y mod 256, (x + y) mod 256, 255).
+# Regions, in order: (0,0) 64x32 and (1216,768) 64x32 hold the base's colours inverted (255 - c, alpha 255);
+# (32,16) 48x32 is solid RGBA(10, 20, 30, 255) and covers part of the first (later wins).
+# result_rgba_sha256: sha256 of the 1280x800 RGBA bytes (row-major) after applying the regions to the base.
+# frame_sha256: the patched frame's sha256 when the base frame's sha256 is base_frame_sha256.
+regions=3
+base_frame_sha256=5a1f0c2e9d8b7a6f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a090807
+result_rgba_sha256=43fc3c7c904894104d496be46f6667030051bc6d4587e358f677efd51de021ef
+frame_sha256=6aac46ee138f3e303073e91040e1e056ec3b4c734ff5330d822a1d0a29e78dd8
