@@ -173,3 +173,4 @@
 - chromedp's `ListenTarget` doc: the callback runs synchronously, and running actions inside it can deadlock. Ack screencast frames with `go chromedp.Run(...)`.
 - Go TOML libraries drop comments when they re-encode, so `PUT /api/screens/{name}/url` edits the one `url = ...` line and re-parses the result before the rename.
 - Chrome for 2 idle 1280x800 tabs: 14 processes, about 450 MiB PSS.
+- **tt7-server S2 on real panels (2026-09-28):** `build/server/tt7-server -config <screens.toml>` on this machine drove both panels at once with a `file://` demo page. Both were reachable, frames went out, and 12 taps on the tabletop glass incremented the page's counter. Touches often arrive tagged with the previous frame_id (the page repaints between taps); the server logs that and delivers them anyway, which is correct.
