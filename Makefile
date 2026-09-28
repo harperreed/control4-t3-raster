@@ -118,7 +118,13 @@ $(B)/tt7probe: probe/tt7probe.c probe/fbdraw.c probe/fbdraw.h $(FONT_DIR)/font8x
 
 # Stock kernel + the NAND module from the stock ramdisk. Vendor binaries: they
 # live only under build/ and are never committed.
-$(B)/stock/kernel.img: $(STOCK_BOOT) scripts/bootimg.py $(MKBOOTIMG)
+# Rewritten only when STOCK_BOOT names a different file, so switching units
+# (make STOCK_BOOT=backup/<unit>/03_boot.bin) re-extracts that unit's kernel.
+$(B)/stock.src: FORCE
+	@mkdir -p $(B)
+	@echo '$(STOCK_BOOT)' | cmp -s - $@ || echo '$(STOCK_BOOT)' > $@
+
+$(B)/stock/kernel.img: $(STOCK_BOOT) $(B)/stock.src scripts/bootimg.py $(MKBOOTIMG)
 	python3 scripts/bootimg.py verify $(STOCK_BOOT)
 	rm -rf $(B)/stock && mkdir -p $(B)/stock/ramdisk
 	python3 $(MKBOOTIMG) unpack $(STOCK_BOOT) $(B)/stock
@@ -235,8 +241,9 @@ check: test-host test-e2e test-mqtt test-input test-camera test-cam $(IMAGE)
 	scripts/test-wifi-setup.sh
 	@echo "make check: all passed"
 
-# Keeps build/known_hosts (the panel's pinned host key) and build/flash-*/
-# (read-backs from real flashes); everything else under build/ is regenerated.
+# Keeps build/known_hosts (the panel's pinned host key), build/flash-*/
+# (read-backs from real flashes) and build/tt7-wall-*.img (other units' images,
+# copied out by hand); everything else under build/ is regenerated.
 clean:
 	@mkdir -p $(B)
-	find $(B) -mindepth 1 -maxdepth 1 ! -name known_hosts ! -name 'flash-*' -exec rm -rf {} +
+	find $(B) -mindepth 1 -maxdepth 1 ! -name known_hosts ! -name 'flash-*' ! -name 'tt7-wall-*.img' -exec rm -rf {} +
