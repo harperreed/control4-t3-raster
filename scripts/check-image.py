@@ -207,6 +207,11 @@ def main():
             "tt7-app ends in the tt7d loop")
     r.check(b"exec ntpd -n -S \"$hook\"" in app and b"command -v tt7-ntp-hook" in app,
             "tt7-app starts ntpd with the tt7-ntp-hook sync hook")
+    # Web update (SPEC M8): the image's tt7-app picks the installed release, with
+    # the trial/rollback chain, and restarts when tt7d exits 75.
+    r.check(b"select_release \"$base\"" in app and b"rel_fail_over()" in app and b"after_tt7d_exit()" in app
+            and b"TT7_EXIT_RESTART=75" in app and b"exec \"$base/releases/$TT7_RELEASE/app\"" in app,
+            "tt7-app selects the web-installed release, rolls back on failed trials, restarts on exit 75")
     ntpd = entries.get("usr/sbin/ntpd")
     r.check(bool(ntpd) and stat.S_ISLNK(ntpd[0]) and ntpd[3] == b"/bin/busybox", "ntpd is a BusyBox applet in the ramdisk")
     busybox = entries.get("bin/busybox", (0, 0, 0, b""))[3]
@@ -216,6 +221,7 @@ def main():
     r.check(b"/run/tt7/ntp-synced" in hook, "tt7-ntp-hook writes /run/tt7/ntp-synced")
     tt7d = entries.get("usr/bin/tt7d", (0, 0, 0, b""))[3]
     r.check(b"/api/v1/frame" in tt7d, "tt7d serves /api/v1/frame")
+    r.check(b"/api/v1/system/update/rollback" in tt7d, "tt7d serves the web update endpoints")
     ko = entries.get("lib/modules/rk30xxnand_ko.ko", (0, 0, 0, b""))[3]
     vermagic = re.search(rb"vermagic=(\S+)", ko)
     release = re.search(rb"Linux version (\S+)", stock["kernel"])

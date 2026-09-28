@@ -12,6 +12,7 @@ is covered in tt7d/test_update_e2e.py.
 """
 import argparse
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -127,6 +128,16 @@ def test_crash_chain(shell):
     check(os.path.isdir(os.path.join(r.dir, "releases", "new")), "chain: failed releases are kept on disk (pruning is tt7d's)")
 
 
+def test_restart_status_matches_tt7d(shell):
+    # The shell script and tt7d are different languages; this keeps their one
+    # shared number from drifting apart.
+    with open(os.path.join(os.path.dirname(HERE), "tt7d", "update.h")) as f:
+        m = re.search(r"#define UPDATE_EXIT_RESTART (\d+)", f.read())
+    r = Root(shell)
+    rc, out = r.sh('echo "$TT7_EXIT_RESTART"')
+    check(m and out == m.group(1), f"tt7-app's TT7_EXIT_RESTART ({out}) == tt7d's UPDATE_EXIT_RESTART ({m and m.group(1)})")
+
+
 def test_restart_request(shell):
     r = Root(shell)
     r.release("new")
@@ -184,7 +195,8 @@ def main():
     args = ap.parse_args()
     shell = shlex.split(args.shell)
     try:
-        for t in (test_no_release, test_new_release_confirmed, test_crash_chain, test_restart_request,
+        for t in (test_no_release, test_new_release_confirmed, test_crash_chain, test_restart_status_matches_tt7d,
+                  test_restart_request,
                   test_broken_app_script, test_unusable_current, test_stale_trial):
             t(shell)
     finally:

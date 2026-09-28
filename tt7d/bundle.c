@@ -396,6 +396,8 @@ int bundle_verify(const uint8_t *tar, size_t len, const uint8_t *pubkey, struct 
     if (!manifest.data) return fail(e, "no_manifest", BUNDLE_MANIFEST, "the bundle has no manifest.json");
     if (manifest.len > BUNDLE_MANIFEST_MAX) return fail(e, "invalid_manifest", BUNDLE_MANIFEST, "larger than 4096 bytes");
     if (bundle_manifest_parse((const char *)manifest.data, manifest.len, b, e) != 0) return -1;
+    b->manifest = manifest.data;
+    b->manifest_len = manifest.len;
 
     /* Authenticity before contents: with a key configured, nothing unsigned goes further. */
     if (pubkey) {

@@ -35,7 +35,8 @@ TT7D_LIB     := tt7d/json.c tt7d/http.c tt7d/render.c tt7d/sha256.c tt7d/ident.c
                 tt7d/sha1.c tt7d/ws.c tt7d/touch.c tt7d/input.c \
                 tt7d/fallback.c tt7d/timesync.c tt7d/font.c tt7d/clockface.c \
                 tt7d/bundle.c tt7d/sign.c
-TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/panel.c tt7d/events.c tt7d/fallback_screen.c tt7d/main.c
+TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/panel.c tt7d/events.c tt7d/fallback_screen.c \
+                tt7d/update.c tt7d/main.c
 TT7D_WEB     := tt7d/web/index.html tt7d/web/panel.css tt7d/web/panel.js
 TT7D_HDRS    := $(wildcard tt7d/*.h) probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h third_party/lodepng/lodepng.h \
                 third_party/stb/stb_truetype.h third_party/tweetnacl/tweetnacl.h third_party/tweetnacl/tweetnacl.c
@@ -48,7 +49,7 @@ LODEPNG_DEFS := -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP \
 TT7D_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
 TT7D_UNITS   := render json http util sysinfo control hardware assets mqtt ws input fallback timesync clockface bundle
 
-.PHONY: all image busybox dropbear wifi tt7d test-host test-e2e test-mqtt test-input check clean FORCE
+.PHONY: all image busybox dropbear wifi tt7d bundle test-host test-e2e test-mqtt test-input test-update check clean FORCE
 .DELETE_ON_ERROR:
 
 all: image
@@ -181,15 +182,27 @@ test-mqtt: $(B)/host/tt7d
 test-input: $(B)/host/tt7d
 	uv run --no-project --quiet $(MQTT_TEST_DEPS) python tt7d/test_input_e2e.py --daemon $(B)/host/tt7d
 
+# Web update: the host daemon installs bundles made by tools/make-bundle.sh from
+# the ARM builds (tt7d/test_update_e2e.py); tt7-app.sh's release selection runs
+# under BusyBox sh, the panel's shell (probe/test_tt7_app.py).
+test-update: $(B)/host/tt7d $(B)/tt7d $(B)/tt7probe
+	python3 tt7d/test_update_e2e.py --daemon $(B)/host/tt7d --payload-dir $(B)
+	python3 probe/test_tt7_app.py --shell "busybox sh"
+
+# An update bundle for the control panel's Update section: build/tt7-bundle-<build>.tar.
+# Sign it with: tools/make-bundle.sh --sign KEY.pem (see tt7d/README.md).
+bundle: $(B)/tt7d $(B)/tt7probe
+	tools/make-bundle.sh
+
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
                  scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \
                  scripts/build-wpa.sh scripts/wifi-setup.sh scripts/test-wifi-setup.sh \
-                 tools/push-frame.sh tools/mqtt-setup.sh tools/subset-fonts.sh
+                 tools/push-frame.sh tools/mqtt-setup.sh tools/subset-fonts.sh tools/make-bundle.sh
 DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh probe/tt7-ntp-hook.sh
 # A system shellcheck if there is one, else the pinned PyPI build through uv.
 SHELLCHECK := $(shell command -v shellcheck 2>/dev/null || echo "uvx --from shellcheck-py==0.11.0.1 shellcheck")
 
-check: test-host test-e2e test-mqtt test-input $(IMAGE)
+check: test-host test-e2e test-mqtt test-input test-update $(IMAGE)
 	python3 scripts/check-image.py --image $(IMAGE) --stock $(STOCK_BOOT) --pubkey $(SSH_PUBKEY)
 	@for s in $(SHELL_SCRIPTS); do bash -n $$s || exit 1; done; echo "  ok   bash -n: $(SHELL_SCRIPTS)"
 	@for s in $(DEVICE_SCRIPTS); do sh -n $$s || exit 1; done; echo "  ok   sh -n: $(DEVICE_SCRIPTS)"

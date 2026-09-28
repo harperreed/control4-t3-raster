@@ -35,6 +35,8 @@ struct bundle {
     int nfiles;
     size_t payload_bytes; /* sum of the files' sizes */
     int signed_ok;        /* 1 if manifest.sig was present and checked against a configured key */
+    const uint8_t *manifest; /* manifest.json as it came, in the tar buffer (set by bundle_verify) */
+    size_t manifest_len;
 };
 
 /* Why a bundle was refused. code is a stable API error code (tt7d/README.md);
