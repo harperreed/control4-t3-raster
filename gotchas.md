@@ -169,7 +169,7 @@
 
 ## tt7-server, S1 (2026-09-28, branch server-s1; host-tested only)
 - Headless Chrome 154's `Page.startScreencast` works on this box and sends frames only on repaint. `Page.captureScreenshot` itself triggers a repaint (a screencast frame per call), so never mix polling with the screencast: they feed each other.
-- A CDP click gives two screencast frames about 13 ms apart: the button's `:active` look on press, then the result on release. With max_fps 5 the second waits out the pacer, which is most of the 135-335 ms touch-to-fb latency measured on localhost.
+- A CDP click gives two screencast frames about 13 ms apart: the button's `:active` look on press, then the result on release. With max_fps 5 the second waits out the pacer, which is most of the 130-340 ms touch-to-fb latency measured on localhost.
 - chromedp's `ListenTarget` doc: the callback runs synchronously, and running actions inside it can deadlock. Ack screencast frames with `go chromedp.Run(...)`.
 - Go TOML libraries drop comments when they re-encode, so `PUT /api/screens/{name}/url` edits the one `url = ...` line and re-parses the result before the rename.
 - Chrome for 2 idle 1280x800 tabs: 14 processes, about 450 MiB PSS.

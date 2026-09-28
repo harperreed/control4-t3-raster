@@ -108,7 +108,7 @@ found so far). The admin **Reload** button is the manual way out.
 ### Measured in the e2e test (this box, 2026-09-28)
 
 - Touch written into a panel's input FIFO → new frame in its framebuffer:
-  about 290-335 ms for the first tap, 135-195 ms for later ones (4 runs).
+  about 290-340 ms for the first tap, 130-195 ms for later ones (5 runs).
   That covers tt7d → WebSocket → CDP click → paint → screencast → pacer →
   PUT → tt7d decode → fb, all on localhost. A real panel adds Wi-Fi and the
   ARM decode time.
