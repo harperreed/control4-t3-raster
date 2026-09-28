@@ -77,3 +77,10 @@
 - curl sends `Expect: 100-continue` for bodies over about 1 MB and waits up to 1 s if the server ignores it. tt7d answers it, after checking the token and size.
 - tt7d logs only failed requests. Its log is `/data/tt7/app.log` on flash, and a per-frame log line would turn every pushed frame into a flash write.
 - tt7d's default `--rotation 90` (logical top-left → fb top-right) is a guess until someone photographs `tools/make-test-frame.py` output on the dock.
+
+## tt7d control panel (2026-09-27, branch tt7d-m4-panel; host-tested only)
+- Blank/wake use the backlight (brightness 0, then the remembered level), not FBIOBLANK or `/sys/class/graphics/fb0/blank`. Both exist in discovery, but what the rk fb blank does to the LCD controller is unverified. Whether brightness 0 is fully dark on the glass is unverified too (discovery: brightness 127, actual_brightness 67).
+- A POST without `Content-Length` gets 411 from tt7d. `curl -X POST` alone sends none, so add `-d ''`. Browsers' `fetch(..., {body: ""})` sends `Content-Length: 0`.
+- CSS `display:` rules on a class beat the `hidden` attribute. The panel's CSS has `[hidden] { display: none !important; }` for this; without it the unlock form and a broken preview image stayed visible.
+- `GET /api/v1/logs` needs the token (SPEC §36: diagnostics are authenticated). The panel checks a pasted token against it before keeping the token.
+- The built-in test pattern is `tools/make-test-frame.py --stamp BUILT-IN` output embedded at build time, so builds stay reproducible. Without `--stamp` the PNG carries the current time.
