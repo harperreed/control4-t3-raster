@@ -1,7 +1,7 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: M0 kernel-side full dump over Wi-Fi running (scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27)
+- Step: M0 kernel-side dump PAUSED (battery 22%, USB resets every 30s-3min under load). Resume: `scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27 system` once docked on its power adapter
 - Next: M0 wrap-up (compare kernel dump vs loader dump, docs/hardware-inventory.md, recovery doc); then tt7d M1/M2 (PNG frame over HTTP)
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
