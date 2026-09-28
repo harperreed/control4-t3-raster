@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ABOUTME: Renders a 1280x800 orientation/colour test frame as PNG using only the Python stdlib.
 # ABOUTME: Labelled corners, an UP arrow, colour bars and a timestamp, so a photo of the panel shows rotation and colours.
-"""Usage: tools/make-test-frame.py [OUT.png] [--label TEXT] [--width W] [--height H]
+"""Usage: tools/make-test-frame.py [OUT.png] [--label TEXT] [--stamp TEXT] [--width W] [--height H]
 
 Writes OUT.png (default test-frame.png) and prints its path. Push it with
 tools/push-frame.sh. The corner blocks differ in colour AND size, so a photo
@@ -87,7 +87,7 @@ class Canvas:
         self.fill(cx - size // 4, top + size, size // 2, size, rgb)
 
 
-def render(width, height, label):
+def render(width, height, label, stamp=None):
     c = Canvas(width, height)
     white, black = (255, 255, 255), (0, 0, 0)
     c.fill(0, 0, width, height, (24, 24, 32))
@@ -124,7 +124,8 @@ def render(width, height, label):
         v = x * 255 // (width - 1)
         c.fill(x, ry, 1, u, (v, v, v))
 
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S %Z")
+    if stamp is None:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S %Z")
     c.text_centred(by - 3 * u, f"{width}x{height}  {stamp}", 4, white)
     if label:
         c.text_centred(by - 3 * u + 6 * 8, label, 3, (255, 255, 0))
@@ -140,10 +141,12 @@ def main():
     ap = argparse.ArgumentParser(description="Render a TT7 orientation/colour test frame (PNG, stdlib only).")
     ap.add_argument("out", nargs="?", default="test-frame.png", help="output path (default test-frame.png)")
     ap.add_argument("--label", default="", help="extra line of text, e.g. which rotation you are testing")
+    ap.add_argument("--stamp", help="text in place of the current time (the build uses this for tt7d's built-in "
+                    "pattern, so the same source gives the same PNG)")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
     args = ap.parse_args()
-    data = render(args.width, args.height, args.label.upper())
+    data = render(args.width, args.height, args.label.upper(), args.stamp)
     with open(args.out, "wb") as f:
         f.write(data)
     print(args.out)

@@ -5,3 +5,6 @@ backlight-sysfs.txt, power-supply-sysfs.txt, sys-class.txt, ip-link.txt).
 Not from the dump: net/*/operstate is inferred from the UP/DOWN state in
 ip-link.txt; sound/* and video4linux/* only list names in sys-class.txt, so
 those directories hold an empty .keep file for git.
+
+input/inputN/eventN (empty dirs) mirror the real sysfs layout: the dump's
+input-devices.txt says Handlers=event0 for the keypad and event1 for gslX680.

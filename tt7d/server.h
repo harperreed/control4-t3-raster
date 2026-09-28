@@ -43,6 +43,11 @@ void resp_error_begin(struct response *resp, int status, const char *code, const
 void resp_error_end(struct response *resp);
 void resp_error(struct response *resp, int status, const char *code, const char *message);
 
+/* Check "Authorization: Bearer <token>" with a constant-time compare.
+ * Returns 0 if it matches, or -1 with resp filled (401 unauthorized plus
+ * WWW-Authenticate). */
+int resp_require_bearer(const char *token, const struct http_request *req, struct response *resp);
+
 /* Bind, then serve forever. Returns only if the listen address is unusable
  * (with a message in err). */
 int server_run(const struct server_config *cfg, const struct server_handlers *h, char *err, size_t errlen);

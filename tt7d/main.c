@@ -11,6 +11,7 @@
 #include "display.h"
 #include "frame.h"
 #include "ident.h"
+#include "panel.h"
 #include "render.h"
 #include "server.h"
 #include "sysinfo.h"
@@ -31,6 +32,9 @@ struct config {
     int rotation;
     const char *data_dir;
     const char *sysfs_root;
+    const char *proc_root;
+    const char *log_file;
+    const char *reboot_cmd;
     size_t max_frame_bytes;
     int timeout_ms;
 };
@@ -39,6 +43,7 @@ struct app {
     struct config cfg;
     struct display disp;
     struct frame_store frames;
+    struct panel panel;
     char token[256];
     char device_id[32]; /* "" if device.json is unusable: reported as null */
     struct timespec started;
@@ -57,6 +62,10 @@ static void usage(FILE *out) {
             "                            to land on the native framebuffer (default 90; UNVERIFIED on the TT7)\n"
             "  --data-dir PATH           token, device.json, last-frame.png (default /data/tt7/tt7d)\n"
             "  --sysfs-root PATH         where to read sysfs from (default /sys)\n"
+            "  --proc-root PATH          where to read /proc files from (default /proc)\n"
+            "  --log-file PATH           tt7d's own log, for GET /api/v1/logs (default /data/tt7/app.log,\n"
+            "                            where tt7-app sends tt7d's output)\n"
+            "  --reboot-cmd CMD          run with /bin/sh -c by POST /api/v1/system/reboot (default 'reboot -f')\n"
             "  --max-frame-bytes N       largest accepted PNG (default 8388608)\n"
             "  --request-timeout-ms N    time to receive a request, and to send its reply (default 30000)\n"
             "  --version, --help\n");
@@ -73,7 +82,8 @@ static int parse_uint(const char *s, unsigned long max, unsigned long *out) {
 
 static int parse_args(int argc, char **argv, struct config *c) {
     *c = (struct config){.listen = "0.0.0.0:80", .fb = "/dev/fb0", .rotation = 90, .data_dir = "/data/tt7/tt7d",
-                         .sysfs_root = "/sys", .max_frame_bytes = 8u << 20, .timeout_ms = 30000};
+                         .sysfs_root = "/sys", .proc_root = "/proc", .log_file = "/data/tt7/app.log",
+                         .reboot_cmd = "reboot -f", .max_frame_bytes = 8u << 20, .timeout_ms = 30000};
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) {
@@ -97,6 +107,9 @@ static int parse_args(int argc, char **argv, struct config *c) {
         else if (!strcmp(a, "--fb-format")) c->fb_format = v;
         else if (!strcmp(a, "--data-dir")) c->data_dir = v;
         else if (!strcmp(a, "--sysfs-root")) c->sysfs_root = v;
+        else if (!strcmp(a, "--proc-root")) c->proc_root = v;
+        else if (!strcmp(a, "--log-file")) c->log_file = v;
+        else if (!strcmp(a, "--reboot-cmd") && *v) c->reboot_cmd = v;
         else if (!strcmp(a, "--fb-stride") && parse_uint(v, 1u << 20, &n) == 0) c->fb_stride = (unsigned)n;
         else if (!strcmp(a, "--rotation") && parse_uint(v, 270, &n) == 0 && render_rotation_valid((int)n))
             c->rotation = (int)n;
@@ -141,7 +154,9 @@ static void info_json(struct app *a, struct sbuf *sb) {
               render_format_name(&d->back), d->back.stride, d->back.bpp);
     sb_puts(sb, ",\"capabilities\":{");
     sysinfo_capabilities(sb, a->cfg.sysfs_root);
-    sb_puts(sb, "},\"auth\":{\"scheme\":\"bearer\",\"required_for\":[\"PUT /api/v1/frame\"]}}");
+    sb_puts(sb, "},\"auth\":{\"scheme\":\"bearer\",\"required_for\":[\"PUT /api/v1/frame\",\"GET /api/v1/logs\","
+                "\"PUT /api/v1/display/brightness\",\"POST /api/v1/display/blank\",\"POST /api/v1/display/wake\","
+                "\"POST /api/v1/display/test-pattern\",\"POST /api/v1/system/reboot\"]}}");
 }
 
 static double seconds_since(const struct timespec *t, clockid_t clock) {
@@ -194,6 +209,12 @@ static const struct route routes[] = {
     {"/api/v1/frame/image", "GET"},
 };
 
+static int find_route(const char *path) {
+    for (size_t i = 0; i < sizeof routes / sizeof routes[0]; i++)
+        if (!strcmp(path, routes[i].path)) return (int)i;
+    return -1;
+}
+
 static int is_frame_put(const struct http_request *req) {
     return !strcmp(req->path, "/api/v1/frame") && !strcmp(req->method, "PUT");
 }
@@ -211,24 +232,28 @@ static int allowed(const char *allow, const char *method) {
 
 static int app_check_head(void *ctx, const struct http_request *req, struct response *resp) {
     struct app *a = ctx;
-    for (size_t i = 0; i < sizeof routes / sizeof routes[0]; i++) {
-        if (strcmp(req->path, routes[i].path) != 0) continue;
-        if (!allowed(routes[i].allow, req->method)) {
-            resp_error(resp, 405, "method_not_allowed", "this method is not supported on this path");
-            snprintf(resp->extra_headers, sizeof resp->extra_headers, "Allow: %s\r\n", routes[i].allow);
-            return -1;
-        }
-        return is_frame_put(req) ? frame_check_head(a->token, req, resp) : 0;
+    int rc = panel_check_head(&a->panel, req, resp);
+    if (rc != PANEL_NOT_MINE) return rc;
+    int i = find_route(req->path);
+    if (i < 0) {
+        resp_error(resp, 404, "not_found", "no such endpoint; see GET /api/v1/info");
+        return -1;
     }
-    resp_error(resp, 404, "not_found", "no such endpoint; see GET /api/v1/info");
-    return -1;
+    if (!allowed(routes[i].allow, req->method)) {
+        resp_error(resp, 405, "method_not_allowed", "this method is not supported on this path");
+        snprintf(resp->extra_headers, sizeof resp->extra_headers, "Allow: %s\r\n", routes[i].allow);
+        return -1;
+    }
+    return is_frame_put(req) ? frame_check_head(a->token, req, resp) : 0;
 }
 
 static void app_handle(void *ctx, const struct http_request *req, const uint8_t *body, size_t len,
                        struct response *resp) {
     struct app *a = ctx;
     resp->status = 200;
-    if (is_frame_put(req)) {
+    if (find_route(req->path) < 0) {
+        panel_handle(&a->panel, req, body, len, resp);
+    } else if (is_frame_put(req)) {
         frame_put(&a->frames, req, body, len, resp);
     } else if (!strcmp(req->path, "/api/v1/info")) {
         info_json(a, &resp->body);
@@ -290,6 +315,12 @@ int main(int argc, char **argv) {
     rc = frame_restore(&a.frames, a.cfg.max_frame_bytes, err, sizeof err);
     if (rc < 0) fprintf(stderr, "tt7d: not restoring the last frame: %s\n", err);
     if (rc > 0) fprintf(stderr, "tt7d: restored last-frame.png (frame id %s)\n", a.frames.id[0] ? a.frames.id : "unknown");
+
+    a.panel = (struct panel){.sysfs_root = a.cfg.sysfs_root, .proc_root = a.cfg.proc_root, .data_dir = a.cfg.data_dir,
+                             .log_file = a.cfg.log_file, .reboot_cmd = a.cfg.reboot_cmd, .token = a.token,
+                             .firmware_version = FIRMWARE_VERSION, .build = TT7D_VERSION, .disp = &a.disp,
+                             .frames = &a.frames};
+    panel_init(&a.panel);
 
     struct server_config sc = {.listen = a.cfg.listen, .max_head = 8192, .max_body = a.cfg.max_frame_bytes,
                                .timeout_ms = a.cfg.timeout_ms, .max_connections = 8};

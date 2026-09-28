@@ -15,8 +15,18 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "ident.h"
+
 #define MAX_CONNECTIONS_CAP 64
 #define READ_CHUNK 65536
+
+/* On every reply, so the control panel page (served by tt7d itself) can only
+ * load its own files: no inline script or style, nothing from elsewhere, and
+ * no framing by other sites (frame-ancestors, which default-src does not
+ * cover). */
+#define CONTENT_SECURITY_POLICY                                                                   \
+    "Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self'; "      \
+    "script-src 'self'; frame-ancestors 'none'\r\n"
 
 enum conn_state { READING, WRITING };
 
@@ -67,6 +77,16 @@ void resp_error(struct response *resp, int status, const char *code, const char 
     resp_error_end(resp);
 }
 
+int resp_require_bearer(const char *token, const struct http_request *req, struct response *resp) {
+    const char *auth = http_header(req, "Authorization");
+    const char *given = NULL;
+    if (auth && strncasecmp(auth, "Bearer ", 7) == 0) given = auth + 7 + strspn(auth + 7, " ");
+    if (token_equal(token, given)) return 0;
+    resp_error(resp, 401, "unauthorized", "this request needs Authorization: Bearer <token>");
+    snprintf(resp->extra_headers, sizeof resp->extra_headers, "WWW-Authenticate: Bearer realm=\"tt7d\"\r\n");
+    return -1;
+}
+
 /* Errors the server itself produces, before any handler runs. */
 static void protocol_error(struct response *resp, int status) {
     switch (status) {
@@ -100,10 +120,11 @@ static void conn_reply(struct conn *c, struct response *resp, const struct serve
     }
     sb_printf(&c->out,
               "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\n"
+              "X-Content-Type-Options: nosniff\r\n%s"
               "Connection: close\r\n%s\r\n",
               resp->status, http_reason(resp->status),
               resp->content_type ? resp->content_type : "application/json; charset=utf-8", resp->body.len,
-              resp->extra_headers);
+              CONTENT_SECURITY_POLICY, resp->extra_headers);
     sb_add(&c->out, resp->body.buf ? resp->body.buf : "", resp->body.len);
     if (c->out.oom) { /* nothing sensible to send */
         c->out.len = 0;

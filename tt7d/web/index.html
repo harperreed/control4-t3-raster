@@ -1,0 +1,104 @@
+<!doctype html>
+<!-- ABOUTME: tt7d's local control panel (SPEC 29-31): overview, display, hardware, system, logs, actions. -->
+<!-- ABOUTME: Compiled into tt7d; the CSP allows only /panel.css and /panel.js, so nothing here is inline. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TT7 control panel</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/panel.css">
+<script src="/panel.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="title">
+    <h1><span id="model">TT7</span> <span id="device-id" class="muted"></span></h1>
+    <span id="online" class="badge">connecting</span>
+  </div>
+  <nav>
+    <a href="#overview">Overview</a>
+    <a href="#display">Display</a>
+    <a href="#hardware">Hardware</a>
+    <a href="#system">System</a>
+    <a href="#logs">Logs</a>
+    <a href="#actions">Actions</a>
+  </nav>
+</header>
+
+<main>
+<section id="auth" class="card auth">
+  <div class="auth-row">
+    <span id="lock-state" class="badge locked">Locked</span>
+    <span id="lock-text">Read-only. Paste the token to change settings.</span>
+  </div>
+  <form id="unlock-form" class="auth-row">
+    <label for="token" class="sr">Bearer token</label>
+    <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Token from /data/tt7/tt7d/token">
+    <button type="submit">Unlock</button>
+  </form>
+  <button id="lock" type="button" hidden>Lock</button>
+  <p id="auth-msg" class="msg" role="status"></p>
+</section>
+
+<section id="overview" class="card">
+  <h2>Overview</h2>
+  <div class="split">
+    <figure class="preview">
+      <img id="preview-overview" class="preview-img" alt="The frame on the panel's screen" hidden>
+      <figcaption class="preview-cap muted">No frame yet</figcaption>
+    </figure>
+    <dl id="overview-list" class="kv"></dl>
+  </div>
+</section>
+
+<section id="display" class="card">
+  <h2>Display</h2>
+  <div class="split">
+    <figure class="preview">
+      <img id="preview-display" class="preview-img" alt="The frame on the panel's screen" hidden>
+      <figcaption class="preview-cap muted">No frame yet</figcaption>
+    </figure>
+    <div>
+      <dl id="display-list" class="kv"></dl>
+      <label for="brightness" class="slider-label">Brightness <output id="brightness-out">?</output></label>
+      <input id="brightness" type="range" min="0" max="100" step="1" value="0" data-needs-token>
+      <div class="buttons">
+        <button id="wake" type="button" data-needs-token>Wake</button>
+        <button id="blank" type="button" data-needs-token>Blank</button>
+        <button id="test-pattern" type="button" data-needs-token>Test pattern</button>
+      </div>
+      <p id="display-msg" class="msg" role="status"></p>
+    </div>
+  </div>
+</section>
+
+<section id="hardware" class="card">
+  <h2>Hardware <button id="hardware-refresh" type="button" class="small">Refresh</button></h2>
+  <div id="hardware-body" class="tree muted">Loading</div>
+</section>
+
+<section id="system" class="card">
+  <h2>System</h2>
+  <dl id="system-list" class="kv"></dl>
+</section>
+
+<section id="logs" class="card">
+  <h2>Logs <button id="logs-refresh" type="button" class="small" data-needs-token>Refresh</button></h2>
+  <p id="logs-msg" class="msg muted">Unlock to read the logs.</p>
+  <h3>tt7d <span id="log-path" class="muted"></span></h3>
+  <pre id="log-tt7d" class="log"></pre>
+  <h3>Kernel</h3>
+  <pre id="log-kernel" class="log"></pre>
+</section>
+
+<section id="actions" class="card">
+  <h2>Actions</h2>
+  <div class="buttons">
+    <button id="reboot" type="button" class="danger" data-needs-token>Reboot the panel</button>
+  </div>
+  <p id="actions-msg" class="msg" role="status"></p>
+</section>
+</main>
+</body>
+</html>

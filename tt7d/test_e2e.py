@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # ABOUTME: End-to-end test: runs the real host-built tt7d on a file-backed 800x1280 RGB565 framebuffer.
-# ABOUTME: Pushes frames over real HTTP and checks the framebuffer bytes against an independent Python rotation.
+# ABOUTME: Pushes frames over real HTTP, checks the framebuffer against an independent Python rotation, and drives the control panel.
 """Usage: tt7d/test_e2e.py --daemon build/host/tt7d   (run by `make test-e2e`)
 
 Nothing here is mocked: the daemon is the same source as the panel build,
 compiled for the host, listening on a free loopback port, with a temporary
-data dir and the sysfs fixture copied from the real panel. The expected
+data dir and a writable copy of the sysfs fixture from the real panel (the
+brightness, blank and wake tests read the backlight files it writes). The expected
 framebuffer contents are computed here, in Python, from the logical RGBA
 pixels, never by asking the daemon.
 """
@@ -17,6 +18,8 @@ import json
 import os
 import random
 import re
+import shlex
+import shutil
 import signal
 import socket
 import struct
@@ -29,6 +32,9 @@ import zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 FIXTURE = os.path.join(HERE, "test", "fixtures", "sysfs-tt7")
+PROC_FIXTURE = os.path.join(HERE, "test", "fixtures", "proc-tt7")
+CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+       "frame-ancestors 'none'")
 
 # The panel's real framebuffer (hardware/discovery/*/fb-ioctl.txt).
 NATIVE_W, NATIVE_H, STRIDE = 800, 1280, 1600
@@ -74,6 +80,10 @@ class Daemon:
         self.fb = os.path.join(workdir, "fb.raw")
         self.data = os.path.join(workdir, "data")
         self.log_path = os.path.join(workdir, "tt7d.log")
+        self.sysfs = os.path.join(workdir, "sysfs")
+        self.backlight = os.path.join(self.sysfs, "class", "backlight", "rk28_bl")
+        self.reboot_marker = os.path.join(workdir, "rebooted")
+        shutil.copytree(FIXTURE, self.sysfs)
         self.port = free_port()
         self.proc = None
         with open(self.fb, "wb") as f:
@@ -84,7 +94,9 @@ class Daemon:
         self.proc = subprocess.Popen(
             [self.binary, "--listen", f"127.0.0.1:{self.port}", "--fb-file", self.fb,
              "--fb-geometry", f"{NATIVE_W}x{NATIVE_H}x16", "--fb-stride", str(STRIDE), "--fb-format", "rgb565",
-             "--rotation", "90", "--data-dir", self.data, "--sysfs-root", FIXTURE,
+             "--rotation", "90", "--data-dir", self.data, "--sysfs-root", self.sysfs,
+             "--proc-root", PROC_FIXTURE, "--log-file", self.log_path,
+             "--reboot-cmd", "touch " + shlex.quote(self.reboot_marker),
              "--request-timeout-ms", str(TIMEOUT_MS)],
             stdout=log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 15
@@ -127,6 +139,20 @@ class Daemon:
             headers["Authorization"] = token
         headers.update(extra)
         return self.request("PUT", "/api/v1/frame", body=png, headers=headers)
+
+    def api(self, method, path, doc=None, token=True, body=None):
+        """A control panel request: JSON body, Bearer token unless token is False (or a string to send)."""
+        headers = {}
+        if token:
+            headers["Authorization"] = "Bearer " + (self.token() if token is True else token)
+        if doc is not None:
+            body = json.dumps(doc).encode()
+            headers["Content-Type"] = "application/json"
+        return self.request(method, path, body=body, headers=headers)
+
+    def bl(self, attr):
+        with open(os.path.join(self.backlight, attr)) as f:
+            return f.read().strip()
 
     def fb_bytes(self):
         with open(self.fb, "rb") as f:
@@ -389,6 +415,173 @@ def test_slow_client_does_not_block(d):
         s.close()
 
 
+# ---- control panel ------------------------------------------------------------
+
+def test_panel_assets(d):
+    status, headers, body = d.request("GET", "/")
+    assert status == 200 and headers["content-type"] == "text/html; charset=utf-8", (status, headers)
+    assert headers["content-security-policy"] == CSP, headers.get("content-security-policy")
+    assert headers["x-content-type-options"] == "nosniff" and headers["cache-control"] == "no-store", headers
+    assert body.startswith(b"<!doctype html>") and b'<script src="/panel.js"' in body, body[:200]
+    for path, ctype, start in (("/panel.css", "text/css; charset=utf-8", b"/* ABOUTME:"),
+                               ("/panel.js", "text/javascript; charset=utf-8", b"// ABOUTME:")):
+        status, headers, body = d.request("GET", path)
+        assert status == 200 and headers["content-type"] == ctype and body.startswith(start), (path, status, headers)
+        assert headers["content-security-policy"] == CSP
+    check_error(d.request("GET", "/nope.js"), 404, "not_found")
+    check_error(d.request("GET", "/test-pattern.png"), 404, "not_found")
+    status, headers, body = d.request("POST", "/", body=b"")
+    assert jbody(status, body, 405)["error"] == "method_not_allowed" and headers["allow"] == "GET", headers
+    # API replies carry the same protections, and nobody gets CORS headers.
+    status, headers, _ = d.request("GET", "/api/v1/state", headers={"Origin": "http://evil.example"})
+    assert status == 200 and headers["cache-control"] == "no-store" and headers["x-content-type-options"] == "nosniff"
+    assert not any(k.startswith("access-control-") for k in headers), headers
+
+
+def test_hardware(d):
+    hw = jbody(*d.request("GET", "/api/v1/hardware")[::2], 200)
+    assert hw["display"] == {"device": d.fb, "native": {"width": 800, "height": 1280, "format": "rgb565",
+                                                         "stride": 1600, "bits_per_pixel": 16},
+                             "rotation": 90, "logical": {"width": 1280, "height": 800},
+                             "blank_method": "backlight"}, hw["display"]
+    inputs = {i["name"]: i for i in hw["input"]}
+    assert inputs["rk29-keypad"]["device"] == "/dev/input/event0" and inputs["rk29-keypad"]["role"] == "buttons"
+    assert inputs["rk29-keypad"]["keys"] == ["volume_down", "volume_up", "power", "wakeup"], inputs
+    assert inputs["gslX680"]["device"] == "/dev/input/event1" and inputs["gslX680"]["role"] == "touchscreen"
+    for attr, value in hw["backlight"]["attributes"].items():
+        assert value == d.bl(attr), (attr, value)
+    supplies = {p["name"]: p["attributes"] for p in hw["power_supplies"]}
+    assert supplies["battery"]["capacity"] == "82" and supplies["ac"]["type"] == "Mains", supplies
+    names = [n["name"] for n in hw["network_interfaces"]]
+    assert names == [n for n in sorted(os.listdir(os.path.join(d.sysfs, "class", "net"))) if n != "lo"], names
+    assert hw["audio"]["cards"] == [{"index": 0, "id": "RK29RT3261", "name": "RK29_RT3261 - RK29_RT3261"}]
+    assert "pcmC0D0p" in hw["audio"]["devices"], hw["audio"]
+    assert hw["video_devices"] == [{"device": "/dev/video0", "name": None}], hw["video_devices"]
+    assert hw["thermal_zones"] == []
+
+
+def test_system(d):
+    sysd = jbody(*d.request("GET", "/api/v1/system")[::2], 200)
+    assert sysd["firmware_version"] == "0.1.0" and sysd["build"], sysd
+    assert sysd["kernel"]["release"] == os.uname().release, sysd["kernel"]
+    assert sysd["memory"]["total"] == {"value": 1048576, "unit": "kibibyte"}, sysd["memory"]
+    assert sysd["memory"]["available"] == {"value": None, "unit": "kibibyte"}, "3.0's meminfo has no MemAvailable"
+    st = os.statvfs(d.data)
+    storage = sysd["storage"][0]
+    assert storage["path"] == d.data and storage["total"] == {"value": st.f_blocks * st.f_frsize, "unit": "byte"}
+    assert sysd["time"]["plausible"] is (time.gmtime().tm_year >= 2024), sysd["time"]
+    assert sysd["time"]["timezone"] == "UTC" and isinstance(sysd["uptime_s"], int)
+
+
+def test_brightness(d):
+    path = "/api/v1/display/brightness"
+    before = d.bl("brightness")
+    check_error(d.api("PUT", path, {"value": 10}, token=False), 401, "unauthorized")
+    check_error(d.api("PUT", path, {"value": 10}, token="wrong"), 401, "unauthorized")
+    assert d.bl("brightness") == before, "an unauthenticated PUT changed the backlight"
+
+    doc = jbody(*d.api("PUT", path, {"value": 200})[::2], 200)
+    assert d.bl("brightness") == "200" and doc["brightness_raw"] == 200 and doc["on"] is True, doc
+    doc = jbody(*d.api("PUT", path, {"value": 50, "unit": "percent"})[::2], 200)
+    assert d.bl("brightness") == "128" and doc["brightness"] == {"value": 50, "unit": "percent", "available": True}
+    state = jbody(*d.request("GET", "/api/v1/state")[::2], 200)
+    assert state["display"]["brightness"]["value"] == 50
+
+    doc = check_error(d.api("PUT", path, {"value": 256}), 400, "brightness_out_of_range")
+    assert doc["max"] == 255 and doc["unit"] == "raw", doc
+    doc = check_error(d.api("PUT", path, {"value": 101, "unit": "percent"}), 400, "brightness_out_of_range")
+    assert doc["max"] == 100, doc
+    check_error(d.api("PUT", path, {"value": -1}), 400, "brightness_out_of_range")
+    check_error(d.api("PUT", path, body=b'{"value": "high"}'), 400, "invalid_brightness")
+    check_error(d.api("PUT", path, body=b""), 400, "invalid_brightness")
+    assert d.bl("brightness") == "128", "a refused PUT changed the backlight"
+    status, headers, body = d.api("GET", path)
+    assert jbody(status, body, 405)["error"] == "method_not_allowed" and headers["allow"] == "PUT"
+
+
+def test_blank_and_wake(d):
+    jbody(*d.api("PUT", "/api/v1/display/brightness", {"value": 180})[::2], 200)
+    check_error(d.api("POST", "/api/v1/display/blank", token=False), 401, "unauthorized")
+    assert d.bl("brightness") == "180"
+
+    doc = jbody(*d.api("POST", "/api/v1/display/blank")[::2], 200)
+    assert d.bl("brightness") == "0" and doc["on"] is False and doc["wake_brightness_raw"] == 180, doc
+    doc = jbody(*d.api("POST", "/api/v1/display/blank")[::2], 200)  # idempotent: keeps the level to wake to
+    assert d.bl("brightness") == "0" and doc["wake_brightness_raw"] == 180, doc
+    state = jbody(*d.request("GET", "/api/v1/state")[::2], 200)
+    assert state["display"]["on"] is False, state["display"]
+
+    check_error(d.api("POST", "/api/v1/display/wake", token=False), 401, "unauthorized")
+    assert d.bl("brightness") == "0"
+    doc = jbody(*d.api("POST", "/api/v1/display/wake")[::2], 200)
+    assert d.bl("brightness") == "180" and doc["on"] is True, doc
+    jbody(*d.api("POST", "/api/v1/display/wake")[::2], 200)  # already awake: no change
+    assert d.bl("brightness") == "180"
+
+    # Something else powered the backlight down: wake turns bl_power back on.
+    with open(os.path.join(d.backlight, "bl_power"), "w") as f:
+        f.write("4\n")
+    doc = jbody(*d.api("POST", "/api/v1/display/wake")[::2], 200)
+    assert d.bl("bl_power") == "0" and d.bl("brightness") == "180" and doc["on"] is True, doc
+
+
+def test_test_pattern(d):
+    before = d.fb_bytes()
+    accepted = jbody(*d.request("GET", "/api/v1/state")[::2], 200)["frames"]["accepted"]
+    check_error(d.api("POST", "/api/v1/display/test-pattern", token=False), 401, "unauthorized")
+    assert d.fb_bytes() == before, "an unauthenticated test pattern reached the screen"
+
+    doc = jbody(*d.api("POST", "/api/v1/display/test-pattern")[::2], 200)
+    assert re.fullmatch(r"test-pattern-[0-9a-f]{16}", doc["frame_id"]) and doc["persisted"] is False, doc
+    fb = d.fb_bytes()
+    assert fb != before, "the test pattern did not change the framebuffer"
+    meta = jbody(*d.request("GET", "/api/v1/frame")[::2], 200)
+    assert meta["frame_id"] == doc["frame_id"], meta
+    status, headers, image = d.request("GET", "/api/v1/frame/image")
+    assert status == 200 and headers["content-type"] == "image/png" and image.startswith(b"\x89PNG\r\n\x1a\n")
+    assert hashlib.sha256(image).hexdigest() == meta["sha256"]
+    pixels, channels = unfiltered_png_pixels(image)
+    assert fb == expected_fb(pixels, channels), "framebuffer != the pattern PNG, independently rotated"
+    o = 2 * STRIDE + (NATIVE_W - 1 - 2) * 2  # logical TOP-LEFT red block -> native top-right
+    assert fb[o:o + 2] == b"\x00\xf8", fb[o:o + 2].hex()
+    state = jbody(*d.request("GET", "/api/v1/state")[::2], 200)
+    assert state["display"]["frame_id"] == doc["frame_id"] and state["frames"]["accepted"] == accepted + 1
+
+
+def test_logs(d):
+    check_error(d.request("GET", "/api/v1/logs"), 401, "unauthorized")
+    check_error(d.api("GET", "/api/v1/logs?lines=0"), 400, "invalid_lines")
+    check_error(d.api("GET", "/api/v1/logs?lines=abc"), 400, "invalid_lines")
+    time.sleep(0.3)  # tt7d logs a failed request once its connection closes; let the 400s above land
+    doc = jbody(*d.api("GET", "/api/v1/logs?lines=3")[::2], 200)
+    assert doc["lines_requested"] == 3 and doc["tt7d"]["path"] == d.log_path and doc["tt7d"]["available"] is True
+    with open(d.log_path, "rb") as f:  # a 200 is not logged, so the file is as it was for the request
+        want = f.read().decode("ascii", "replace").splitlines()[-3:]
+    assert doc["tt7d"]["lines"] == want and "invalid_lines" in want[-1], (doc["tt7d"]["lines"], want)
+    k = doc["kernel"]
+    assert isinstance(k["available"], bool) and isinstance(k["lines"], list), k
+    assert k["available"] or (k["error"] and k["lines"] == []), k
+
+
+def test_reboot(d):
+    check_error(d.api("POST", "/api/v1/system/reboot", token=False), 401, "unauthorized")
+    time.sleep(1.5)
+    assert not os.path.exists(d.reboot_marker), "an unauthenticated reboot ran the command"
+    status, _, body = d.api("POST", "/api/v1/system/reboot")
+    doc = jbody(status, body, 202)
+    assert doc == {"rebooting": True, "delay": {"value": 1, "unit": "second"}}, doc
+    deadline = time.monotonic() + 10
+    while not os.path.exists(d.reboot_marker) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert os.path.exists(d.reboot_marker), "the reboot command did not run"
+    assert jbody(*d.request("GET", "/api/v1/info")[::2], 200)["model"] == "C4-TT7", "the daemon kept serving"
+
+
+def test_token_never_logged(d):
+    with open(d.log_path, "rb") as f:
+        assert d.token().encode() not in f.read(), "the bearer token appeared in the log"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--daemon", required=True, help="host-built tt7d binary")
@@ -422,6 +615,24 @@ def main():
             test_slow_client_does_not_block(d)
             steps.append("persist, restart, restore")
             test_persist_and_restart(d)
+            steps.append("panel: HTML/CSS/JS, CSP and security headers")
+            test_panel_assets(d)
+            steps.append("panel: /hardware matches the fixtures")
+            test_hardware(d)
+            steps.append("panel: /system")
+            test_system(d)
+            steps.append("panel: brightness auth, write, range")
+            test_brightness(d)
+            steps.append("panel: blank and wake")
+            test_blank_and_wake(d)
+            steps.append("panel: test pattern through the frame path")
+            test_test_pattern(d)
+            steps.append("panel: logs")
+            test_logs(d)
+            steps.append("panel: reboot runs the configured command")
+            test_reboot(d)
+            steps.append("token never in the log")
+            test_token_never_logged(d)
         except Exception as e:  # noqa: BLE001 - report which step failed, with the daemon log
             print(f"FAIL test_e2e: {steps[-1] if steps else 'start'}: {type(e).__name__}: {e}", file=sys.stderr)
             d.stop()

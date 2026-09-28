@@ -48,6 +48,13 @@ int frame_check_head(const char *token, const struct http_request *req, struct r
 void frame_put(struct frame_store *fs, const struct http_request *req, const uint8_t *body, size_t len,
                struct response *resp);
 
+/* Validate, decode and show a PNG whose SHA-256 (hex) is already known:
+ * the part of PUT /api/v1/frame after its headers, also used for the
+ * built-in test pattern. The same pixels as on screen only update the id and
+ * receipt time. Fills resp with the frame metadata (200) or an error. */
+void frame_show(struct frame_store *fs, const uint8_t *png, size_t len, const char *sha, const char *id, int persist,
+                struct response *resp);
+
 /* The frame metadata object (GET /api/v1/frame and the PUT reply). */
 void frame_json(const struct frame_store *fs, struct sbuf *sb);
 

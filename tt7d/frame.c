@@ -31,14 +31,7 @@ static int persist_flag(const struct http_request *req) {
 }
 
 int frame_check_head(const char *token, const struct http_request *req, struct response *resp) {
-    const char *auth = http_header(req, "Authorization");
-    const char *given = NULL;
-    if (auth && strncasecmp(auth, "Bearer ", 7) == 0) given = auth + 7 + strspn(auth + 7, " ");
-    if (!token_equal(token, given)) {
-        resp_error(resp, 401, "unauthorized", "PUT /api/v1/frame needs Authorization: Bearer <token>");
-        snprintf(resp->extra_headers, sizeof resp->extra_headers, "WWW-Authenticate: Bearer realm=\"tt7d\"\r\n");
-        return -1;
-    }
+    if (resp_require_bearer(token, req, resp) != 0) return -1;
     const char *ct = http_header(req, "Content-Type");
     size_t n = ct ? strcspn(ct, "; \t") : 0;
     if (!ct || n != 9 || strncasecmp(ct, "image/png", 9) != 0) {
@@ -133,7 +126,6 @@ void frame_put(struct frame_store *fs, const struct http_request *req, const uin
         resp_error_end(resp);
         return;
     }
-    int persist = persist_flag(req);
     char id[129];
     const char *given = http_header(req, "X-Frame-ID");
     if (given) {
@@ -146,7 +138,11 @@ void frame_put(struct frame_store *fs, const struct http_request *req, const uin
         }
         snprintf(id, sizeof id, "tt7d-%s", hex);
     }
+    frame_show(fs, body, len, sha, id, persist_flag(req), resp);
+}
 
+void frame_show(struct frame_store *fs, const uint8_t *body, size_t len, const char *sha, const char *id,
+                int persist, struct response *resp) {
     /* Same pixels as on screen: no decode, no redraw; only the receipt changes. */
     if (fs->have && strcmp(sha, fs->sha256) == 0) {
         if (persist && !fs->persisted && persist_write(fs, body, len, sha, id) != 0) {
@@ -188,7 +184,7 @@ void frame_put(struct frame_store *fs, const struct http_request *req, const uin
     fs->png_len = len;
     fs->have = 1;
     snprintf(fs->id, sizeof fs->id, "%s", id);
-    memcpy(fs->sha256, sha, sizeof sha);
+    snprintf(fs->sha256, sizeof fs->sha256, "%s", sha);
     now_both(&fs->received_at, &fs->received_mono);
     fs->displayed_at = fs->received_at;
     fs->received_known = 1;

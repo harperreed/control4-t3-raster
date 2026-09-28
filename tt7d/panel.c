@@ -1,0 +1,426 @@
+/* ABOUTME: Control panel routes: embedded static files, /hardware, /system, /logs, and the display and
+ * ABOUTME: reboot actions. Every mutation needs the bearer token; blank/wake drive the backlight in sysfs. */
+#include "panel.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/klog.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/utsname.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "assets.h"
+#include "control.h"
+#include "hardware.h"
+#include "ident.h"
+#include "render.h"
+#include "sha256.h"
+#include "sysinfo.h"
+
+#define LOG_TAIL_BYTES (256 * 1024) /* how much of the log file end is read for a tail */
+#define REBOOT_DELAY_S 1            /* lets the 202 reach the client first */
+
+enum route_id { R_HARDWARE, R_SYSTEM, R_LOGS, R_BRIGHTNESS, R_BLANK, R_WAKE, R_TEST_PATTERN, R_REBOOT };
+
+static const struct {
+    enum route_id id;
+    const char *path;
+    const char *method; /* the only one allowed */
+    int auth;
+} routes[] = {
+    {R_HARDWARE, "/api/v1/hardware", "GET", 0},
+    {R_SYSTEM, "/api/v1/system", "GET", 0},
+    {R_LOGS, "/api/v1/logs", "GET", 1}, /* diagnostics: SPEC 36 wants these authenticated */
+    {R_BRIGHTNESS, "/api/v1/display/brightness", "PUT", 1},
+    {R_BLANK, "/api/v1/display/blank", "POST", 1},
+    {R_WAKE, "/api/v1/display/wake", "POST", 1},
+    {R_TEST_PATTERN, "/api/v1/display/test-pattern", "POST", 1},
+    {R_REBOOT, "/api/v1/system/reboot", "POST", 1},
+};
+#define NROUTES (sizeof routes / sizeof routes[0])
+
+static int find_route(const char *path) {
+    for (size_t i = 0; i < NROUTES; i++)
+        if (!strcmp(routes[i].path, path)) return (int)i;
+    return -1;
+}
+
+static void method_not_allowed(struct response *resp, const char *allow) {
+    resp_error(resp, 405, "method_not_allowed", "this method is not supported on this path");
+    snprintf(resp->extra_headers, sizeof resp->extra_headers, "Allow: %s\r\n", allow);
+}
+
+int panel_check_head(struct panel *p, const struct http_request *req, struct response *resp) {
+    int r = find_route(req->path);
+    if (r < 0) {
+        if (!asset_find(req->path)) return PANEL_NOT_MINE;
+        if (strcmp(req->method, "GET") != 0) {
+            method_not_allowed(resp, "GET");
+            return -1;
+        }
+        return 0;
+    }
+    if (strcmp(req->method, routes[r].method) != 0) {
+        method_not_allowed(resp, routes[r].method);
+        return -1;
+    }
+    return routes[r].auth ? resp_require_bearer(p->token, req, resp) : 0;
+}
+
+/* ---- backlight --------------------------------------------------------------- */
+
+/* The first backlight's name, or "" if there is none (tt7d uses only that one). */
+static void backlight_name(const struct panel *p, char *out) {
+    struct names bl;
+    list_dir(p->sysfs_root, "class/backlight", &bl);
+    snprintf(out, NAME_LEN, "%s", bl.n ? bl.v[0] : "");
+}
+
+static int backlight_write(const struct panel *p, const char *name, const char *attr, long value) {
+    char path[512];
+    snprintf(path, sizeof path, "%s/class/backlight/%s/%s", p->sysfs_root, name, attr);
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+    int ok = fprintf(f, "%ld\n", value) > 0;
+    return fclose(f) == 0 && ok ? 0 : -1;
+}
+
+void panel_init(struct panel *p) {
+    char bl[NAME_LEN];
+    backlight_name(p, bl);
+    long level = bl[0] ? read_long(p->sysfs_root, "class/backlight", bl, "brightness", -1) : -1;
+    p->wake_level = level > 0 ? level : -1;
+}
+
+/* The display power state after an action: what /state reports, plus the
+ * raw levels the action worked with. */
+static void display_state(const struct panel *p, const char *bl, struct response *resp) {
+    int on, pct;
+    sysinfo_backlight(p->sysfs_root, &on, &pct);
+    long raw = read_long(p->sysfs_root, "class/backlight", bl, "brightness", -1);
+    long max = read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
+    struct sbuf *sb = &resp->body;
+    resp->status = 200;
+    sb_printf(sb, "{\"on\":%s,\"brightness\":", on < 0 ? "null" : on ? "true" : "false");
+    if (pct >= 0) sb_printf(sb, "{\"value\":%d,\"unit\":\"percent\",\"available\":true}", pct);
+    else sb_puts(sb, "{\"value\":null,\"unit\":\"percent\",\"available\":false}");
+    sb_puts(sb, ",\"brightness_raw\":");
+    if (raw >= 0) sb_printf(sb, "%ld", raw);
+    else sb_puts(sb, "null");
+    sb_puts(sb, ",\"max_brightness\":");
+    if (max >= 0) sb_printf(sb, "%ld", max);
+    else sb_puts(sb, "null");
+    sb_puts(sb, ",\"wake_brightness_raw\":");
+    if (p->wake_level > 0) sb_printf(sb, "%ld", p->wake_level);
+    else sb_puts(sb, "null");
+    sb_puts(sb, ",\"blank_method\":\"backlight\"}");
+}
+
+static void write_failed(struct response *resp, const char *bl) {
+    resp_error_begin(resp, 500, "backlight_write_failed", "could not write the backlight's sysfs file");
+    sb_puts(&resp->body, ",\"device\":");
+    sb_json_str(&resp->body, bl);
+    sb_puts(&resp->body, ",\"detail\":");
+    sb_json_str(&resp->body, strerror(errno));
+    resp_error_end(resp);
+}
+
+static int require_backlight(const struct panel *p, char *bl, struct response *resp) {
+    backlight_name(p, bl);
+    if (bl[0]) return 0;
+    resp_error(resp, 503, "no_backlight", "no backlight device in sysfs");
+    return -1;
+}
+
+static void set_brightness(struct panel *p, const uint8_t *body, size_t len, struct response *resp) {
+    char bl[NAME_LEN];
+    long value;
+    int percent;
+    if (brightness_parse((const char *)body, len, &value, &percent) != 0) {
+        resp_error(resp, 400, "invalid_brightness",
+                   "send {\"value\": <integer>} (raw backlight level) or {\"value\": <0-100>, \"unit\": \"percent\"}");
+        return;
+    }
+    if (require_backlight(p, bl, resp) != 0) return;
+    long max = read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
+    long raw = brightness_to_raw(value, percent, max);
+    if (raw < 0) {
+        resp_error_begin(resp, 400, "brightness_out_of_range", "the value is outside the allowed range");
+        sb_printf(&resp->body, ",\"unit\":\"%s\",\"min\":0,\"max\":", percent ? "percent" : "raw");
+        if (percent || max > 0) sb_printf(&resp->body, "%ld", percent ? 100L : max);
+        else sb_puts(&resp->body, "null");
+        resp_error_end(resp);
+        return;
+    }
+    if (backlight_write(p, bl, "brightness", raw) != 0) {
+        write_failed(resp, bl);
+        return;
+    }
+    if (raw > 0) p->wake_level = raw;
+    display_state(p, bl, resp);
+}
+
+/* Blank = backlight level 0, keeping the old level for wake. The fb blank
+ * ioctl is not used: on this Rockchip 3.0 kernel it is unverified what it
+ * powers down and whether unblank brings the LCD controller back. */
+static void blank(struct panel *p, struct response *resp) {
+    char bl[NAME_LEN];
+    if (require_backlight(p, bl, resp) != 0) return;
+    long cur = read_long(p->sysfs_root, "class/backlight", bl, "brightness", -1);
+    if (cur > 0) p->wake_level = cur;
+    if (cur != 0 && backlight_write(p, bl, "brightness", 0) != 0) {
+        write_failed(resp, bl);
+        return;
+    }
+    display_state(p, bl, resp);
+}
+
+/* Wake = bl_power back to 0 (on) if something set it, and the remembered
+ * level if the backlight is at 0. Without a remembered level (tt7d started
+ * while blank), max_brightness, as tt7-app does at boot. */
+static void wake(struct panel *p, struct response *resp) {
+    char bl[NAME_LEN];
+    if (require_backlight(p, bl, resp) != 0) return;
+    if (read_long(p->sysfs_root, "class/backlight", bl, "bl_power", 0) != 0 &&
+        backlight_write(p, bl, "bl_power", 0) != 0) {
+        write_failed(resp, bl);
+        return;
+    }
+    long cur = read_long(p->sysfs_root, "class/backlight", bl, "brightness", -1);
+    long level = p->wake_level > 0 ? p->wake_level : read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
+    if (cur == 0 && level > 0 && backlight_write(p, bl, "brightness", level) != 0) {
+        write_failed(resp, bl);
+        return;
+    }
+    display_state(p, bl, resp);
+}
+
+/* ---- test pattern -------------------------------------------------------------- */
+
+static void test_pattern(struct panel *p, struct response *resp) {
+    const struct asset *a = asset_find(ASSET_TEST_PATTERN);
+    char sha[65], hex[17], id[64];
+    if (!a || random_hex(hex, 8) != 0) {
+        resp_error(resp, 500, "internal_error", "the built-in test pattern is unavailable");
+        return;
+    }
+    sha256_hex(a->data, a->len, sha);
+    snprintf(id, sizeof id, "test-pattern-%s", hex);
+    frame_show(p->frames, a->data, a->len, sha, id, 0, resp);
+}
+
+/* ---- reboot -------------------------------------------------------------------- */
+
+/* Reply 202 first; a detached grandchild waits, syncs, and runs the reboot
+ * command. Detached because a reboot attached to a session once hung for
+ * minutes (gotchas.md), and because plain `reboot` only signals PID 1, which
+ * our init ignores: the default command is `reboot -f`. */
+static void reboot_later(struct panel *p, struct response *resp) {
+    sync();
+    pid_t pid = fork();
+    if (pid < 0) {
+        resp_error(resp, 500, "reboot_failed", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        setsid();
+        pid_t grandchild = fork();
+        if (grandchild != 0) _exit(grandchild < 0 ? 1 : 0);
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) dup2(devnull, 0);
+        sleep(REBOOT_DELAY_S);
+        sync();
+        execl("/bin/sh", "sh", "-c", p->reboot_cmd, (char *)NULL);
+        fprintf(stderr, "tt7d: exec /bin/sh for the reboot command: %s\n", strerror(errno));
+        _exit(127);
+    }
+    int status;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    fprintf(stderr, "tt7d: reboot requested; running '%s' in %d s\n", p->reboot_cmd, REBOOT_DELAY_S);
+    resp->status = 202;
+    sb_printf(&resp->body, "{\"rebooting\":true,\"delay\":{\"value\":%d,\"unit\":\"second\"}}", REBOOT_DELAY_S);
+}
+
+/* ---- logs ---------------------------------------------------------------------- */
+
+/* The last n lines of a file as a JSON array, reading at most the last
+ * LOG_TAIL_BYTES. Returns -1 (nothing appended) if it cannot be read. */
+static int file_tail_json(struct sbuf *sb, const char *path, unsigned n) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    struct stat st;
+    if (fd < 0) return -1;
+    if (fstat(fd, &st) != 0) {
+        close(fd);
+        return -1;
+    }
+    off_t off = st.st_size > LOG_TAIL_BYTES ? st.st_size - LOG_TAIL_BYTES : 0;
+    size_t want = (size_t)(st.st_size - off), got = 0;
+    char *buf = malloc(want ? want : 1);
+    if (!buf) {
+        close(fd);
+        return -1;
+    }
+    while (got < want) {
+        ssize_t r = pread(fd, buf + got, want - got, off + (off_t)got);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    close(fd);
+    size_t start = tail_start(buf, got, n);
+    if (start == 0 && off > 0) { /* the window starts mid-line: drop that partial line */
+        char *nl = memchr(buf, '\n', got);
+        start = nl ? (size_t)(nl - buf) + 1 : got;
+    }
+    json_lines(sb, buf + start, got - start, 0);
+    free(buf);
+    return 0;
+}
+
+static void kernel_log_json(struct sbuf *sb, unsigned n) {
+    int size = klogctl(10 /* SYSLOG_ACTION_SIZE_BUFFER */, NULL, 0);
+    char *buf = size > 0 ? malloc((size_t)size) : NULL;
+    int got = buf ? klogctl(3 /* SYSLOG_ACTION_READ_ALL */, buf, size) : -1;
+    if (got < 0) {
+        const char *why = size < 0 || buf ? strerror(errno) : "out of memory";
+        sb_puts(sb, "\"kernel\":{\"available\":false,\"lines\":[],\"error\":");
+        sb_json_str(sb, why);
+        sb_puts(sb, "}");
+        free(buf);
+        return;
+    }
+    size_t start = tail_start(buf, (size_t)got, n);
+    sb_puts(sb, "\"kernel\":{\"available\":true,\"lines\":");
+    json_lines(sb, buf + start, (size_t)got - start, 1);
+    sb_puts(sb, ",\"error\":null}");
+    free(buf);
+}
+
+static void logs(struct panel *p, const struct http_request *req, struct response *resp) {
+    unsigned n;
+    if (lines_query(req->query, 200, 2000, &n) != 0) {
+        resp_error(resp, 400, "invalid_lines", "lines must be an integer from 1 to 2000");
+        return;
+    }
+    struct sbuf *sb = &resp->body;
+    resp->status = 200;
+    sb_printf(sb, "{\"lines_requested\":%u,\"tt7d\":{\"path\":", n);
+    sb_json_str(sb, p->log_file);
+    sb_puts(sb, ",\"available\":");
+    size_t mark = sb->len;
+    sb_puts(sb, "true,\"lines\":");
+    if (file_tail_json(sb, p->log_file, n) != 0) {
+        sb->len = mark;
+        sb->buf[mark] = 0;
+        sb_puts(sb, "false,\"lines\":[]");
+    }
+    sb_puts(sb, "},");
+    kernel_log_json(sb, n);
+    sb_puts(sb, "}");
+}
+
+/* ---- /system and /hardware ------------------------------------------------------- */
+
+/* A /proc/meminfo value in KiB, or -1. */
+static long meminfo_kib(const char *proc_root, const char *key) {
+    char path[512], line[128];
+    snprintf(path, sizeof path, "%s/meminfo", proc_root);
+    FILE *f = fopen(path, "r");
+    long v = -1;
+    size_t klen = strlen(key);
+    while (f && fgets(line, sizeof line, f))
+        if (!strncmp(line, key, klen) && line[klen] == ':') {
+            v = strtol(line + klen + 1, NULL, 10);
+            break;
+        }
+    if (f) fclose(f);
+    return v;
+}
+
+static void quantity(struct sbuf *sb, const char *key, long long v, const char *unit) {
+    sb_printf(sb, "\"%s\":", key);
+    if (v >= 0) sb_printf(sb, "{\"value\":%lld,\"unit\":\"%s\"}", v, unit);
+    else sb_printf(sb, "{\"value\":null,\"unit\":\"%s\"}", unit);
+}
+
+static void system_json(struct panel *p, struct sbuf *sb) {
+    struct utsname u;
+    int have_uname = uname(&u) == 0;
+    struct timespec now, boot;
+    clock_gettime(CLOCK_REALTIME, &now);
+    clock_gettime(CLOCK_BOOTTIME, &boot);
+
+    sb_puts(sb, "{\"firmware_version\":");
+    sb_json_str(sb, p->firmware_version);
+    sb_puts(sb, ",\"build\":");
+    sb_json_str(sb, p->build);
+    sb_puts(sb, ",\"kernel\":{\"release\":");
+    sb_json_str(sb, have_uname ? u.release : NULL);
+    sb_puts(sb, ",\"version\":");
+    sb_json_str(sb, have_uname ? u.version : NULL);
+    sb_puts(sb, ",\"machine\":");
+    sb_json_str(sb, have_uname ? u.machine : NULL);
+    sb_printf(sb, "},\"uptime_s\":%lld,\"memory\":{", (long long)boot.tv_sec);
+    quantity(sb, "total", meminfo_kib(p->proc_root, "MemTotal"), "kibibyte");
+    sb_puts(sb, ",");
+    quantity(sb, "free", meminfo_kib(p->proc_root, "MemFree"), "kibibyte");
+    sb_puts(sb, ",");
+    quantity(sb, "available", meminfo_kib(p->proc_root, "MemAvailable"), "kibibyte"); /* newer than 3.0 */
+
+    struct statvfs vfs;
+    int have_vfs = statvfs(p->data_dir, &vfs) == 0;
+    sb_puts(sb, "},\"storage\":[{\"path\":");
+    sb_json_str(sb, p->data_dir);
+    sb_puts(sb, ",");
+    quantity(sb, "total", have_vfs ? (long long)vfs.f_blocks * (long long)vfs.f_frsize : -1, "byte");
+    sb_puts(sb, ",");
+    quantity(sb, "available", have_vfs ? (long long)vfs.f_bavail * (long long)vfs.f_frsize : -1, "byte");
+
+    sb_puts(sb, "}],\"time\":{\"now\":");
+    sb_json_time(sb, &now);
+    /* Nothing sets the clock yet (no NTP); a 1970 date means "unset". */
+    sb_printf(sb, ",\"plausible\":%s,\"timezone\":\"UTC\",\"synchronized\":null}}",
+              clock_plausible(now.tv_sec) ? "true" : "false");
+}
+
+static void hardware_json(struct panel *p, struct sbuf *sb) {
+    const struct display *d = p->disp;
+    sb_puts(sb, "{\"display\":{\"device\":");
+    sb_json_str(sb, d->device);
+    sb_printf(sb,
+              ",\"native\":{\"width\":%u,\"height\":%u,\"format\":\"%s\",\"stride\":%u,\"bits_per_pixel\":%u},"
+              "\"rotation\":%d,\"logical\":{\"width\":%u,\"height\":%u},\"blank_method\":\"backlight\"},",
+              d->back.width, d->back.height, render_format_name(&d->back), d->back.stride, d->back.bpp, d->rotation,
+              d->logical_w, d->logical_h);
+    hardware_members(sb, p->sysfs_root, p->proc_root);
+    sb_puts(sb, "}");
+}
+
+void panel_handle(struct panel *p, const struct http_request *req, const uint8_t *body, size_t len,
+                  struct response *resp) {
+    int r = find_route(req->path);
+    resp->status = 200;
+    if (r < 0) { /* an embedded file; panel_check_head() made sure it exists */
+        const struct asset *a = asset_find(req->path);
+        resp->content_type = a->content_type;
+        sb_add(&resp->body, a->data, a->len);
+        return;
+    }
+    switch (routes[r].id) {
+    case R_HARDWARE: hardware_json(p, &resp->body); break;
+    case R_SYSTEM: system_json(p, &resp->body); break;
+    case R_LOGS: logs(p, req, resp); break;
+    case R_BRIGHTNESS: set_brightness(p, body, len, resp); break;
+    case R_BLANK: blank(p, resp); break;
+    case R_WAKE: wake(p, resp); break;
+    case R_TEST_PATTERN: test_pattern(p, resp); break;
+    case R_REBOOT: reboot_later(p, resp); break;
+    }
+}

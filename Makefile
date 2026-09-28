@@ -27,15 +27,19 @@ CROSS_CFLAGS := -std=c11 -D_GNU_SOURCE -static -Os -Wall -Wextra -Werror
 HOST_CFLAGS  := -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined
 
 # tt7d: the network display daemon. Modules shared by the daemon and its unit tests.
-TT7D_LIB     := tt7d/json.c tt7d/http.c tt7d/render.c tt7d/sha256.c tt7d/ident.c tt7d/sysinfo.c probe/fbdraw.c
-TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/server.c tt7d/main.c
+# TT7D_ASSETS_C embeds the control panel (tt7d/web/) and the test pattern; see its rule below.
+TT7D_ASSETS_C := $(B)/gen/tt7d_assets.c
+TT7D_LIB     := tt7d/json.c tt7d/http.c tt7d/render.c tt7d/sha256.c tt7d/ident.c tt7d/sysinfo.c probe/fbdraw.c \
+                tt7d/control.c tt7d/hardware.c tt7d/assets.c $(TT7D_ASSETS_C)
+TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/server.c tt7d/panel.c tt7d/main.c
+TT7D_WEB     := tt7d/web/index.html tt7d/web/panel.css tt7d/web/panel.js
 TT7D_HDRS    := $(wildcard tt7d/*.h) probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h third_party/lodepng/lodepng.h
 TT7D_INC     := -Itt7d -Iprobe -I$(FONT_DIR) -Ithird_party/lodepng
 LODEPNG      := third_party/lodepng/lodepng.cpp
 LODEPNG_DEFS := -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP \
                 -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS
 TT7D_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
-TT7D_UNITS   := render json http util sysinfo
+TT7D_UNITS   := render json http util sysinfo control hardware assets
 
 .PHONY: all image busybox dropbear wifi tt7d test-host test-e2e check clean FORCE
 .DELETE_ON_ERROR:
@@ -68,6 +72,18 @@ $(B)/tt7d.version: FORCE
 	@mkdir -p $(B)
 	@echo '$(TT7D_VERSION)' | cmp -s - $@ || echo '$(TT7D_VERSION)' > $@
 FORCE:
+
+# The built-in test pattern: the same orientation/colour frame as tools/make-test-frame.py,
+# with fixed text in place of the time so the same source gives the same binary.
+$(B)/gen/test-pattern.png: tools/make-test-frame.py $(FONT_DIR)/font8x8_basic.h
+	@mkdir -p $(B)/gen
+	python3 tools/make-test-frame.py $@ --label "tt7d test pattern" --stamp "BUILT-IN" > /dev/null
+
+# Files compiled into tt7d: URL paths start with '/', internal names do not.
+$(TT7D_ASSETS_C): tt7d/embed.py $(TT7D_WEB) $(B)/gen/test-pattern.png
+	@mkdir -p $(B)/gen
+	python3 tt7d/embed.py $@ /=tt7d/web/index.html /panel.css=tt7d/web/panel.css /panel.js=tt7d/web/panel.js \
+		test-pattern.png=$(B)/gen/test-pattern.png
 
 # The display daemon for the panel. lodepng is compiled as C (third_party/lodepng/PROVENANCE).
 $(B)/tt7d: $(TT7D_SRCS) $(TT7D_HDRS) $(LODEPNG) $(B)/tt7d.version

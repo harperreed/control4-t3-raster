@@ -12,18 +12,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define MAX_NAMES 32
-#define NAME_LEN 64
-
-struct names {
-    int n;
-    char v[MAX_NAMES][NAME_LEN];
-};
-
 static int cmp_names(const void *a, const void *b) { return strcmp(a, b); }
 
-/* Sorted entries of <root>/<rel>, without dot files. Empty if absent. */
-static void list_dir(const char *root, const char *rel, struct names *out) {
+void list_dir(const char *root, const char *rel, struct names *out) {
     char path[512];
     snprintf(path, sizeof path, "%s/%s", root, rel);
     out->n = 0;
@@ -39,8 +30,7 @@ static void list_dir(const char *root, const char *rel, struct names *out) {
     qsort(out->v, (size_t)out->n, NAME_LEN, cmp_names);
 }
 
-/* Read <root>/<dir>/<name>/<attr>, trailing whitespace stripped. 0 or -1. */
-static int read_attr(const char *root, const char *dir, const char *name, const char *attr, char *buf, size_t n) {
+int read_attr(const char *root, const char *dir, const char *name, const char *attr, char *buf, size_t n) {
     char path[512];
     snprintf(path, sizeof path, "%s/%s/%s/%s", root, dir, name, attr);
     FILE *f = fopen(path, "r");
@@ -52,7 +42,7 @@ static int read_attr(const char *root, const char *dir, const char *name, const 
     return 0;
 }
 
-static long read_long(const char *root, const char *dir, const char *name, const char *attr, long fallback) {
+long read_long(const char *root, const char *dir, const char *name, const char *attr, long fallback) {
     char buf[64], *end;
     if (read_attr(root, dir, name, attr, buf, sizeof buf) != 0 || !buf[0]) return fallback;
     long v = strtol(buf, &end, 10);
@@ -132,9 +122,15 @@ static void json_device(struct sbuf *sb, const char *key, const char *field, con
     sb_puts(sb, "}");
 }
 
-void sysinfo_capabilities(struct sbuf *sb, const char *root) {
-    /* Input: touch = the Silead controller by name, or anything with ABS_MT_POSITION_X
+const char *sysinfo_input_role(const char *name, const char *modalias) {
+    /* Touch = the Silead controller by name, or anything with ABS_MT_POSITION_X
      * (0x35); buttons = key devices without absolute axes (EV_KEY 1, EV_ABS 3). */
+    if (strstr(name, "gslX680") || modalias_has(modalias, 'a', 0x35)) return "touchscreen";
+    if (modalias_has(modalias, 'e', 1) && !modalias_has(modalias, 'e', 3)) return "buttons";
+    return "other";
+}
+
+void sysinfo_capabilities(struct sbuf *sb, const char *root) {
     struct names inputs, buttons = {0};
     char touch[NAME_LEN] = "";
     list_dir(root, "class/input", &inputs);
@@ -143,10 +139,9 @@ void sysinfo_capabilities(struct sbuf *sb, const char *root) {
         if (strncmp(inputs.v[i], "input", 5) != 0) continue;
         if (read_attr(root, "class/input", inputs.v[i], "name", name, sizeof name) != 0) continue;
         if (read_attr(root, "class/input", inputs.v[i], "modalias", mod, sizeof mod) != 0) mod[0] = 0;
-        if (!touch[0] && (strstr(name, "gslX680") || modalias_has(mod, 'a', 0x35)))
-            snprintf(touch, sizeof touch, "%s", name);
-        else if (modalias_has(mod, 'e', 1) && !modalias_has(mod, 'e', 3) && buttons.n < MAX_NAMES)
-            snprintf(buttons.v[buttons.n++], NAME_LEN, "%s", name);
+        const char *role = sysinfo_input_role(name, mod);
+        if (!touch[0] && !strcmp(role, "touchscreen")) snprintf(touch, sizeof touch, "%s", name);
+        else if (!strcmp(role, "buttons") && buttons.n < MAX_NAMES) snprintf(buttons.v[buttons.n++], NAME_LEN, "%s", name);
     }
     json_device(sb, "touch", "device", touch);
     sb_printf(sb, ",\"buttons\":{\"available\":%s,\"devices\":", buttons.n ? "true" : "false");
@@ -231,8 +226,7 @@ void sysinfo_power(struct sbuf *sb, const char *root) {
     sb_printf(sb, ",\"external_power_online\":%s}", online == 1 ? "true" : online == 0 ? "false" : "null");
 }
 
-/* The interface's IPv4 address from the kernel, or "" if it has none. */
-static void ipv4_of(const char *ifname, char *out, size_t n) {
+void ipv4_of(const char *ifname, char *out, size_t n) {
     out[0] = 0;
     int s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (s < 0) return;

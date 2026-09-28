@@ -1,0 +1,3 @@
+A copy of the parts of the C4-TT7's /proc that tt7d reads, from the real
+panel's discovery dump (hardware/discovery/boot-0004-up22s): asound/cards is
+the first two lines of asound-cards.txt, meminfo is meminfo.txt.
