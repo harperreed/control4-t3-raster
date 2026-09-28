@@ -38,4 +38,12 @@ void display_draw(struct display *d, const uint8_t *rgba);
 /* Copy the back buffer to the screen in one pass. */
 void display_present(struct display *d);
 
+/* Convert only the logical rect (x, y, w, h) of a full logical_w x logical_h
+ * RGBA image into the back buffer. */
+void display_draw_rect(struct display *d, const uint8_t *rgba, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+
+/* Copy only the native pixels under the logical rect (x, y, w, h) from the
+ * back buffer to the screen. */
+void display_present_rect(struct display *d, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+
 #endif

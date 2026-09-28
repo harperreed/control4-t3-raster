@@ -35,7 +35,7 @@ TT7D_LIB     := tt7d/json.c tt7d/flatconf.c tt7d/http.c tt7d/render.c tt7d/sha25
                 tt7d/sha1.c tt7d/ws.c tt7d/touch.c tt7d/input.c \
                 tt7d/fallback.c tt7d/timesync.c tt7d/font.c tt7d/clockface.c \
                 tt7d/camera_config.c tt7d/camera_proto.c tt7d/presence.c tt7d/bundle.c tt7d/sign.c
-TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/panel.c tt7d/events.c tt7d/fallback_screen.c \
+TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/regions.c tt7d/panel.c tt7d/events.c tt7d/fallback_screen.c \
                 tt7d/update.c tt7d/main.c \
                 tt7d/camera.c tt7d/camera_worker.c cam/capture.c cam/yuv.c cam/sentinel.c cam/motion.c cam/jpeg.c
 TT7D_WEB     := tt7d/web/index.html tt7d/web/panel.css tt7d/web/panel.js tt7d/web/camera.js tt7d/web/update.js
@@ -50,7 +50,7 @@ LODEPNG_DEFS := -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP \
                 -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS
 TT7D_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
 TT7D_UNITS   := render json http util sysinfo control hardware assets mqtt ws input fallback timesync clockface camera \
-                bundle
+                bundle regions
 
 # cam: camera capture tool for the panel (cam/). A separate static binary, not
 # part of the boot image: copy build/tt7cam to the panel and run it there.
@@ -166,6 +166,11 @@ $(B)/host/test_%: tt7d/test_%.c tt7d/test_common.h $(TT7D_LIB) $(TT7D_HDRS)
 $(B)/host/test_clockface: tt7d/test_clockface.c tt7d/test_common.h $(TT7D_LIB) $(TT7D_HDRS) $(B)/host/lodepng.o
 	@mkdir -p $(B)/host
 	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(TT7D_INC) -o $@ $< $(TT7D_LIB) $(B)/host/lodepng.o -lm
+
+# Region updates (PATCH /frame) decode with lodepng; the golden vector is shared with server/internal/regions.
+$(B)/host/test_regions: tt7d/test_regions.c tt7d/test_common.h tt7d/regions.c $(TT7D_LIB) $(TT7D_HDRS) $(B)/host/lodepng.o
+	@mkdir -p $(B)/host
+	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(TT7D_INC) -o $@ $< tt7d/regions.c $(TT7D_LIB) $(B)/host/lodepng.o -lm
 
 # Host build of the real daemon for the end-to-end test. lodepng is compiled
 # as C (see third_party/lodepng/PROVENANCE). lodepng.defs holds LODEPNG_DEFS,

@@ -74,6 +74,52 @@ static void test_rotations(void) {
     check_rotation(270, 2, 4, r270);
 }
 
+/* Only the pixels of the logical rect (1,0) 2x2 -- indices 1, 2, 5, 6 -- are
+ * drawn; every other native pixel keeps its marker. The same hand-written
+ * layouts as check_rotation. */
+static void check_rect(int rotation, uint32_t nw, uint32_t nh, const int *want) {
+    uint8_t mem[16];
+    struct fbd_surface s;
+    fbd_init(&s, mem, nw, nh, nw * 2, 16, R565, G565, B565, NONE);
+    const uint32_t marker = 0x001F; /* blue: no logical index has any blue */
+    for (uint32_t i = 0; i < 8; i++) fbd_put(&s, (int)(i % nw), (int)(i / nw), marker);
+
+    uint8_t rgba[32];
+    make_indexed(rgba);
+    render_rgba_rect(&s, rotation, rgba, 4, 2, 1, 0, 2, 2);
+    for (uint32_t y = 0; y < nh; y++)
+        for (uint32_t x = 0; x < nw; x++) {
+            int idx = want[y * nw + x];
+            int inside = idx == 1 || idx == 2 || idx == 5 || idx == 6;
+            uint32_t exp = inside ? (uint32_t)idx << 11 : marker;
+            CHECK(fbd_get(&s, (int)x, (int)y) == exp, "rect, rotation %d native (%u,%u): got %#x want %#x", rotation,
+                  x, y, fbd_get(&s, (int)x, (int)y), exp);
+        }
+
+    /* The native bounding box of that rect is exactly the native pixels that changed. */
+    uint32_t bx, by, bw, bh;
+    render_native_rect(rotation, 4, 2, 1, 0, 2, 2, &bx, &by, &bw, &bh);
+    for (uint32_t y = 0; y < nh; y++)
+        for (uint32_t x = 0; x < nw; x++) {
+            int idx = want[y * nw + x];
+            int inside = idx == 1 || idx == 2 || idx == 5 || idx == 6;
+            int in_box = x >= bx && x < bx + bw && y >= by && y < by + bh;
+            CHECK(inside == in_box, "native box, rotation %d: (%u,%u) inside %d, in box %u,%u %ux%u", rotation, x, y,
+                  inside, bx, by, bw, bh);
+        }
+}
+
+static void test_rect_rotations(void) {
+    static const int r0[] = {0, 1, 2, 3, 4, 5, 6, 7};
+    static const int r90[] = {4, 0, 5, 1, 6, 2, 7, 3};
+    static const int r180[] = {7, 6, 5, 4, 3, 2, 1, 0};
+    static const int r270[] = {3, 7, 2, 6, 1, 5, 0, 4};
+    check_rect(0, 4, 2, r0);
+    check_rect(90, 2, 4, r90);
+    check_rect(180, 4, 2, r180);
+    check_rect(270, 2, 4, r270);
+}
+
 static void test_rotation_valid(void) {
     CHECK(render_rotation_valid(0) && render_rotation_valid(90) && render_rotation_valid(180) &&
               render_rotation_valid(270),
@@ -113,6 +159,7 @@ static void test_xrgb8888_values(void) {
 
 int main(void) {
     test_rotations();
+    test_rect_rotations();
     test_rotation_valid();
     test_rgb565_values();
     test_xrgb8888_values();

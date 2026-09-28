@@ -1,5 +1,5 @@
-/* ABOUTME: PUT /api/v1/frame: hash, dedup, PNG validation and decode, optional persistence, then one copy to the screen.
- * ABOUTME: Also restores last-frame.png at startup and renders the frame metadata JSON. */
+/* ABOUTME: PUT /api/v1/frame (hash, dedup, decode, optional persistence, one copy to the screen) and PATCH (regions
+ * ABOUTME: onto the kept logical RGBA, all or nothing). Also restores last-frame.png and renders the frame metadata. */
 #include "frame.h"
 
 #include <errno.h>
@@ -13,12 +13,14 @@
 
 #include "ident.h"
 #include "lodepng.h"
+#include "regions.h"
 #include "sha256.h"
 
 void frame_store_init(struct frame_store *fs, const char *data_dir, struct display *disp) {
     memset(fs, 0, sizeof *fs);
     fs->data_dir = data_dir;
     fs->disp = disp;
+    fs->regions = -1;
 }
 
 static int is_hex64(const char *s) { return strlen(s) == 64 && strspn(s, "0123456789abcdefABCDEF") == 64; }
@@ -52,6 +54,46 @@ int frame_check_head(const char *token, const struct http_request *req, struct r
     }
     if (persist_flag(req) < 0) {
         resp_error(resp, 400, "invalid_persist", "X-Persist must be true or false");
+        return -1;
+    }
+    return 0;
+}
+
+int frame_check_patch_head(const char *token, const struct http_request *req, struct response *resp) {
+    if (resp_require_bearer(token, req, resp) != 0) return -1;
+    const char *ct = http_header(req, "Content-Type");
+    size_t n = ct ? strcspn(ct, "; \t") : 0, want = strlen(REGIONS_CONTENT_TYPE);
+    if (!ct || n != want || strncasecmp(ct, REGIONS_CONTENT_TYPE, want) != 0) {
+        resp_error_begin(resp, 415, "unsupported_media_type",
+                         "a frame PATCH must be sent as Content-Type: " REGIONS_CONTENT_TYPE);
+        sb_puts(&resp->body, ",\"supported\":[\"" REGIONS_CONTENT_TYPE "\"]");
+        resp_error_end(resp);
+        return -1;
+    }
+    const char *base = http_header(req, "X-Base-Frame-ID");
+    if (!base) {
+        resp_error(resp, 400, "missing_base_frame_id", "a frame PATCH must name its base frame in X-Base-Frame-ID");
+        return -1;
+    }
+    const char *id = http_header(req, "X-Frame-ID");
+    if (!frame_id_valid(base) || (id && !frame_id_valid(id))) {
+        resp_error(resp, 400, "invalid_frame_id",
+                   "X-Frame-ID and X-Base-Frame-ID must be 1 to 128 printable ASCII characters, no spaces");
+        return -1;
+    }
+    const char *sha = http_header(req, "X-Frame-SHA256");
+    if (sha && !is_hex64(sha)) {
+        resp_error(resp, 400, "invalid_sha256", "X-Frame-SHA256 must be 64 hex digits");
+        return -1;
+    }
+    int persist = persist_flag(req);
+    if (persist < 0) {
+        resp_error(resp, 400, "invalid_persist", "X-Persist must be true or false");
+        return -1;
+    }
+    if (persist) {
+        resp_error(resp, 400, "persist_not_supported",
+                   "a frame PATCH cannot be persisted; PUT the whole frame with X-Persist: true instead");
         return -1;
     }
     return 0;
@@ -112,6 +154,31 @@ static void reply_frame(const struct frame_store *fs, struct response *resp) {
     frame_json(fs, &resp->body);
 }
 
+/* X-Frame-ID, or a new "tt7d-<24 hex>". Returns 0, or -1 with resp filled. */
+static int request_frame_id(const struct http_request *req, char id[129], struct response *resp) {
+    const char *given = http_header(req, "X-Frame-ID");
+    if (given) {
+        snprintf(id, 129, "%s", given);
+        return 0;
+    }
+    char hex[25];
+    if (random_hex(hex, 12) != 0) {
+        resp_error(resp, 500, "internal_error", "cannot read /dev/urandom for a frame id");
+        return -1;
+    }
+    snprintf(id, 129, "tt7d-%s", hex);
+    return 0;
+}
+
+/* The receipt of an update that changed no pixels: a new id and time. */
+static void receipt_only(struct frame_store *fs, const char *id) {
+    snprintf(fs->id, sizeof fs->id, "%s", id);
+    now_both(&fs->received_at, &fs->received_mono);
+    fs->received_known = 1;
+    fs->deduplicated = 1;
+    fs->dedup_count++;
+}
+
 void frame_put(struct frame_store *fs, const struct http_request *req, const uint8_t *body, size_t len,
                struct response *resp) {
     char sha[65];
@@ -127,17 +194,7 @@ void frame_put(struct frame_store *fs, const struct http_request *req, const uin
         return;
     }
     char id[129];
-    const char *given = http_header(req, "X-Frame-ID");
-    if (given) {
-        snprintf(id, sizeof id, "%s", given);
-    } else {
-        char hex[25];
-        if (random_hex(hex, 12) != 0) {
-            resp_error(resp, 500, "internal_error", "cannot read /dev/urandom for a frame id");
-            return;
-        }
-        snprintf(id, sizeof id, "tt7d-%s", hex);
-    }
+    if (request_frame_id(req, id, resp) != 0) return;
     frame_show(fs, body, len, sha, id, persist_flag(req), resp);
 }
 
@@ -149,12 +206,8 @@ void frame_show(struct frame_store *fs, const uint8_t *body, size_t len, const c
             resp_error(resp, 500, "persist_failed", strerror(errno));
             return;
         }
-        snprintf(fs->id, sizeof fs->id, "%s", id);
-        now_both(&fs->received_at, &fs->received_mono);
-        fs->received_known = 1;
+        receipt_only(fs, id);
         fs->persisted |= persist;
-        fs->deduplicated = 1;
-        fs->dedup_count++;
         reply_frame(fs, resp);
         return;
     }
@@ -170,9 +223,12 @@ void frame_show(struct frame_store *fs, const uint8_t *body, size_t len, const c
         return;
     }
     display_draw(fs->disp, rgba); /* into the back buffer; the screen is untouched */
-    free(rgba);
     if (persist && persist_write(fs, body, len, sha, id) != 0) {
         free(copy);
+        free(rgba);
+        /* The back buffer holds pixels that never reached the screen. Put the
+         * shown frame back, so a PATCH's rect copies show only what it changed. */
+        if (fs->rgba && fs->on_screen) display_draw(fs->disp, fs->rgba);
         resp_error(resp, 500, "persist_failed", strerror(errno));
         return;
     }
@@ -182,6 +238,10 @@ void frame_show(struct frame_store *fs, const uint8_t *body, size_t len, const c
     free(fs->png);
     fs->png = copy;
     fs->png_len = len;
+    free(fs->rgba);
+    fs->rgba = rgba;
+    fs->update_bytes = len;
+    fs->regions = -1;
     fs->have = 1;
     fs->on_screen = 1;
     snprintf(fs->id, sizeof fs->id, "%s", id);
@@ -194,6 +254,127 @@ void frame_show(struct frame_store *fs, const uint8_t *body, size_t len, const c
     fs->restored = 0;
     fs->accepted++;
     reply_frame(fs, resp);
+}
+
+/* 409 base_mismatch, naming what the screen shows instead. */
+static void base_mismatch(const struct frame_store *fs, const char *covered_by, struct response *resp) {
+    resp_error_begin(resp, 409, "base_mismatch",
+                     "X-Base-Frame-ID is not the frame on screen; PUT the whole frame instead");
+    sb_puts(&resp->body, ",\"current_frame_id\":");
+    sb_json_str(&resp->body, covered_by ? covered_by : fs->have && fs->id[0] ? fs->id : NULL);
+    resp_error_end(resp);
+}
+
+static void regions_reply_error(const struct regions_error *e, struct response *resp) {
+    resp_error_begin(resp, e->status, e->code, e->message);
+    if (e->index >= 0) sb_printf(&resp->body, ",\"region\":%d", e->index);
+    if (!strcmp(e->code, "too_many_regions")) sb_printf(&resp->body, ",\"max\":%d", REGIONS_MAX);
+    if (!strcmp(e->code, "region_size_mismatch"))
+        sb_printf(&resp->body, ",\"expected\":[%u,%u],\"received\":[%u,%u]", e->expected_w, e->expected_h,
+                  e->received_w, e->received_h);
+    if (e->detail) {
+        sb_puts(&resp->body, ",\"detail\":");
+        sb_json_str(&resp->body, e->detail);
+    }
+    resp_error_end(resp);
+}
+
+void frame_patch(struct frame_store *fs, const struct http_request *req, const uint8_t *body, size_t len,
+                 const char *covered_by, struct response *resp) {
+    const char *base = http_header(req, "X-Base-Frame-ID");
+    if (covered_by || !fs->have || !fs->on_screen || !fs->rgba || !base || strcmp(base, fs->id) != 0) {
+        base_mismatch(fs, covered_by, resp);
+        return;
+    }
+    struct region r[REGIONS_MAX];
+    int n = 0;
+    struct regions_error e = {0};
+    if (regions_parse(body, len, fs->disp->logical_w, fs->disp->logical_h, r, &n, &e) != 0) {
+        regions_reply_error(&e, resp);
+        return;
+    }
+    char sha[65];
+    if (n == 0) { /* no pixels change, so neither does the hash */
+        snprintf(sha, sizeof sha, "%s", fs->sha256);
+    } else if (regions_frame_sha(fs->sha256, body, len, sha) != 0) {
+        resp_error(resp, 500, "internal_error", "out of memory");
+        return;
+    }
+    const char *claimed = http_header(req, "X-Frame-SHA256");
+    if (claimed && strcasecmp(claimed, sha) != 0) {
+        resp_error_begin(resp, 400, "sha256_mismatch", "X-Frame-SHA256 is not the patched frame's SHA-256");
+        sb_puts(&resp->body, ",\"header\":");
+        sb_json_str(&resp->body, claimed);
+        sb_puts(&resp->body, ",\"computed\":");
+        sb_json_str(&resp->body, sha);
+        resp_error_end(resp);
+        return;
+    }
+    char id[129];
+    if (request_frame_id(req, id, resp) != 0) return;
+    if (n == 0) {
+        receipt_only(fs, id);
+        reply_frame(fs, resp);
+        return;
+    }
+    if (regions_apply(r, n, fs->rgba, fs->disp->logical_w, fs->disp->logical_h, &e) != 0) {
+        regions_reply_error(&e, resp); /* nothing was applied */
+        return;
+    }
+    /* Every region decoded and is in fs->rgba: from here nothing can fail. */
+    for (int i = 0; i < n; i++) display_draw_rect(fs->disp, fs->rgba, r[i].x, r[i].y, r[i].w, r[i].h);
+    for (int i = 0; i < n; i++) display_present_rect(fs->disp, r[i].x, r[i].y, r[i].w, r[i].h);
+
+    free(fs->png);
+    fs->png = NULL; /* GET /frame/image encodes the composed frame when asked */
+    fs->png_len = 0;
+    snprintf(fs->id, sizeof fs->id, "%s", id);
+    snprintf(fs->sha256, sizeof fs->sha256, "%s", sha);
+    now_both(&fs->received_at, &fs->received_mono);
+    fs->displayed_at = fs->received_at;
+    fs->received_known = 1;
+    fs->persisted = 0;
+    fs->deduplicated = 0;
+    fs->restored = 0;
+    fs->update_bytes = len;
+    fs->regions = n;
+    fs->accepted++;
+    fs->region_updates++;
+    reply_frame(fs, resp);
+}
+
+/* Filter "zero", a 512-byte window and no lazy matching: a 1280x800 clock
+ * face (mostly flat colour) came out about 49 KB in 38 ms on the dev host,
+ * against 385 ms with lodepng's defaults (2026-09-28). It blocks the poll
+ * loop while it runs; expect several times longer on the panel's ARM core
+ * (not measured). */
+int frame_encode_png(const uint8_t *rgba, unsigned w, unsigned h, uint8_t **png, size_t *len) {
+    LodePNGState st;
+    lodepng_state_init(&st);
+    st.info_raw.colortype = LCT_RGBA;
+    st.info_png.color.colortype = LCT_RGB;
+    st.encoder.auto_convert = 0;
+    st.encoder.filter_strategy = LFS_ZERO;
+    st.encoder.zlibsettings.windowsize = 512;
+    st.encoder.zlibsettings.lazymatching = 0;
+    *png = NULL;
+    unsigned err = lodepng_encode(png, len, rgba, w, h, &st);
+    lodepng_state_cleanup(&st);
+    if (err) {
+        free(*png);
+        *png = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+void frame_image(struct frame_store *fs, struct response *resp) {
+    if (!fs->png && frame_encode_png(fs->rgba, fs->disp->logical_w, fs->disp->logical_h, &fs->png, &fs->png_len)) {
+        resp_error(resp, 500, "internal_error", "cannot encode the frame as PNG");
+        return;
+    }
+    resp->content_type = "image/png";
+    sb_add(&resp->body, fs->png, fs->png_len);
 }
 
 int frame_restore(struct frame_store *fs, size_t max_bytes, char *err, size_t errlen) {
@@ -238,13 +419,15 @@ int frame_restore(struct frame_store *fs, size_t max_bytes, char *err, size_t er
         return -1;
     }
     display_draw(fs->disp, rgba);
-    free(rgba);
     display_present(fs->disp);
 
     fs->have = 1;
     fs->on_screen = 1;
+    fs->rgba = rgba;
     fs->png = png;
     fs->png_len = len;
+    fs->update_bytes = len;
+    fs->regions = -1;
     sha256_hex(png, len, fs->sha256);
     fs->id[0] = 0;
     char line[256], sha[65], id[129];
@@ -274,7 +457,10 @@ void frame_json(const struct frame_store *fs, struct sbuf *sb) {
     sb_json_time(sb, &fs->displayed_at);
     sb_printf(sb,
               ",\"width\":%u,\"height\":%u,\"content_type\":\"image/png\",\"bytes\":%zu,\"persisted\":%s,"
-              "\"deduplicated\":%s,\"restored\":%s}",
-              fs->disp->logical_w, fs->disp->logical_h, fs->png_len, fs->persisted ? "true" : "false",
-              fs->deduplicated ? "true" : "false", fs->restored ? "true" : "false");
+              "\"deduplicated\":%s,\"restored\":%s,\"updated_via\":\"%s\",\"regions\":",
+              fs->disp->logical_w, fs->disp->logical_h, fs->update_bytes, fs->persisted ? "true" : "false",
+              fs->deduplicated ? "true" : "false", fs->restored ? "true" : "false",
+              fs->regions < 0 ? "full" : "regions");
+    if (fs->regions < 0) sb_puts(sb, "null}");
+    else sb_printf(sb, "%d}", fs->regions);
 }

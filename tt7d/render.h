@@ -32,6 +32,17 @@ void render_unmap(int rotation, uint32_t native_w, uint32_t native_h, uint32_t n
 void render_rgba(const struct fbd_surface *dst, int rotation, const uint8_t *rgba, uint32_t logical_w,
                  uint32_t logical_h);
 
+/* Draw only the rect (x, y, w, h) of a full logical_w x logical_h RGBA image,
+ * rotated exactly as render_rgba would: a region update redraws its pixels
+ * and leaves the rest of `dst` alone. The caller keeps the rect inside the
+ * logical image. */
+void render_rgba_rect(const struct fbd_surface *dst, int rotation, const uint8_t *rgba, uint32_t logical_w,
+                      uint32_t logical_h, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+
+/* The native rect that the logical rect (x, y, w, h) lands on (w, h >= 1). */
+void render_native_rect(int rotation, uint32_t logical_w, uint32_t logical_h, uint32_t x, uint32_t y, uint32_t w,
+                        uint32_t h, uint32_t *nx, uint32_t *ny, uint32_t *nw, uint32_t *nh);
+
 /* "rgb565", "xrgb8888", "argb8888", or "unknown" for any other channel layout. */
 const char *render_format_name(const struct fbd_surface *s);
 

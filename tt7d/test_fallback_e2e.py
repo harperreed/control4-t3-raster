@@ -139,6 +139,16 @@ def test_timeout_brings_the_clock_back(d, expected):
     preview_matches_screen(d)
 
 
+def test_patch_during_fallback(d):
+    """The clock covers the frame, so it is no base for regions: 409 names the clock, and nothing changes."""
+    before = d.fb_bytes()
+    small = e2e.png_bytes(8, 8, e2e.random_image(42, w=8, h=8))
+    doc = e2e.check_error(e2e.patch_frame(d, e2e.regions_body([(0, 0, 8, 8, small)]), "fb-dup"), 409, "base_mismatch")
+    assert re.fullmatch(r"fallback-clock-\d+", doc["current_frame_id"]), doc
+    assert d.fb_bytes() == before, "a PATCH drew over the fallback clock"
+    assert state(d)["fallback"]["active"] is True, "a refused PATCH counted as a heartbeat"
+
+
 def test_not_persisted(d, png):
     with open(os.path.join(d.data, "last-frame.png"), "rb") as f:
         assert f.read() == png, "the fallback clock replaced last-frame.png"
@@ -201,6 +211,8 @@ def main():
             test_duplicate_frames_keep_the_frame(d, png, expected)
             steps.append("silence for the timeout brings the clock back")
             test_timeout_brings_the_clock_back(d, expected)
+            steps.append("a PATCH during the fallback is refused with 409 base_mismatch")
+            test_patch_during_fallback(d)
             steps.append("the fallback clock is never persisted")
             test_not_persisted(d, png)
             steps.append("the same frame again during the fallback is drawn again")
