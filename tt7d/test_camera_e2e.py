@@ -428,6 +428,48 @@ def test_flag(binary, workdir, fifo):
         d.stop()
 
 
+def test_update_restart(binary, workdir, fifo):
+    """An update restart (tt7d exits 75) stops the worker through SIGTERM and reaps it before tt7d exits.
+
+    The rollback is the cheapest way to that exit: the update root holds one
+    usable previous release (an executable bin/tt7d and app, never run here)."""
+    rundir = os.path.join(workdir, "update-restart")
+    root = os.path.join(rundir, "tt7")
+    rel = os.path.join(root, "releases", "older", "bin")
+    os.makedirs(rel)
+    os.makedirs(os.path.join(root, "update"))
+    for path in (os.path.join(rel, "tt7d"), os.path.join(root, "releases", "older", "app")):
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o755)
+    with open(os.path.join(root, "update", "previous"), "w") as f:
+        f.write("older\n")
+    d = Tt7d(binary, rundir)
+    d.extra_args = ["--camera", "on", "--camera-fake-source", fifo, "--update-root", root,
+                    "--ntp-marker", os.path.join(workdir, "nomarker")]
+    try:
+        d.start()
+        state = d.get_json("/api/v1/state")
+        assert "camera" in state and "update" in state, f"/state members: {sorted(state)}"
+        assert state["update"] == {"release": None, "restart_pending": False}, state["update"]
+        cam = wait_for("the worker running", lambda: (c := d.camera())["worker"] == "running" and c)
+        pid = cam["worker_pid"]
+        status, _, body = d.api("POST", "/api/v1/system/update/rollback")
+        assert status == 202, body
+        assert d.get_json("/api/v1/state")["update"]["restart_pending"] is True
+        rc = d.proc.wait(timeout=10)
+        d.proc = None
+        assert rc == 75, f"tt7d exit status {rc}, want 75"
+        # tt7d reaped it: not a zombie, not an orphan still holding the camera.
+        assert not os.path.exists(f"/proc/{pid}"), f"worker {pid} outlived tt7d"
+        log = d.log()
+        assert re.search(rf"camera: worker {pid} stopped before tt7d exits \(exit status 0\)", log), log[-1500:]
+        assert "SIGKILL" not in log, "the worker needed SIGKILL"
+        assert not re.search(r"AddressSanitizer|runtime error|LeakSanitizer", log), "sanitizer findings"
+    finally:
+        d.stop()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--daemon", required=True, help="host-built tt7d binary")
@@ -471,6 +513,9 @@ def main():
             d.stop()
             steps.append("--camera on beats camera.conf and locks enabled (409)")
             test_flag(binary, workdir, fifo)
+            steps.append("an update restart (exit 75) stops the worker with SIGTERM and reaps it first; "
+                         "/state has camera and update")
+            test_update_restart(binary, workdir, fifo)
         except Exception as e:  # noqa: BLE001 - report which step failed, with the logs
             print(f"FAIL test_camera_e2e: {steps[-1] if steps else 'start'}: {type(e).__name__}: {e}", file=sys.stderr)
             d.stop()

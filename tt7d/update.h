@@ -55,9 +55,14 @@ void update_handle(struct update *u, const struct http_request *req, const uint8
 void update_on_reply(struct update *u, const struct http_request *req, const struct response *resp);
 
 /* Poll loop hooks: the confirm timer and the restart after an install or
- * rollback. update_service exits the process with UPDATE_EXIT_RESTART when
- * that restart is due. */
+ * rollback. update_service returns 1 when that restart is due: the caller
+ * then stops what must not outlive tt7d (the camera worker) and exits with
+ * UPDATE_EXIT_RESTART. Otherwise 0. */
 void update_prepare(struct update *u, int64_t *wait_ms);
-void update_service(struct update *u);
+int update_service(struct update *u);
+
+/* The "update" member of /state (key included, no comma): the release this
+ * tt7d runs from and whether a restart is pending. GET /system/update has the rest. */
+void update_state_member(const struct update *u, struct sbuf *sb);
 
 #endif

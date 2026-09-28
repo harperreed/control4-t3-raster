@@ -126,6 +126,12 @@ void camera_handle(struct camera *c, const struct http_request *req, const uint8
 int camera_prepare(struct camera *c, struct pollfd *pfd, int max, int64_t *wait_ms);
 void camera_service(struct camera *c, const struct pollfd *pfd, int n);
 
+/* Before tt7d exits (an update restart): stop the worker the normal way
+ * (SIGTERM, so it closes the camera: STREAMOFF, ION free), SIGKILL after
+ * CAMERA_KILL_GRACE_MS, and reap it, so it never outlives tt7d holding the
+ * camera the next tt7d wants. Blocks for at most about the grace time. */
+void camera_shutdown(struct camera *c);
+
 /* The "camera" member of /info capabilities and of /state (key included, no comma). */
 void camera_info_member(const struct camera *c, struct sbuf *sb);
 void camera_state_member(const struct camera *c, struct sbuf *sb);

@@ -655,7 +655,7 @@ void update_prepare(struct update *u, int64_t *wait_ms) {
 /* Healthy = this tt7d has run its poll loop (the one that answers every
  * request, /api/v1/info included) for confirm_after_s since it started
  * listening. Then it confirms its own release if that is under trial. */
-void update_service(struct update *u) {
+int update_service(struct update *u) {
     int64_t now = now_ms();
     if (!u->confirm_checked && now - u->started_ms >= (int64_t)u->cfg.confirm_after_s * 1000) {
         u->confirm_checked = 1;
@@ -670,9 +670,11 @@ void update_service(struct update *u) {
                 fprintf(stderr, "tt7d: update: could not confirm %s: %s\n", id, strerror(errno));
         }
     }
-    if (u->restart_at_ms && now >= u->restart_at_ms) {
-        fprintf(stderr, "tt7d: exiting with status %d so tt7-app starts the new release\n", UPDATE_EXIT_RESTART);
-        fflush(stderr);
-        exit(UPDATE_EXIT_RESTART);
-    }
+    return u->restart_at_ms && now >= u->restart_at_ms;
+}
+
+void update_state_member(const struct update *u, struct sbuf *sb) {
+    sb_puts(sb, "\"update\":{\"release\":");
+    sb_json_str(sb, u->cfg.release);
+    sb_printf(sb, ",\"restart_pending\":%s}", u->restart_at_ms ? "true" : "false");
 }

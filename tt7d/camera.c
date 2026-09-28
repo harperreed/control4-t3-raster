@@ -804,6 +804,31 @@ void camera_info_member(const struct camera *c, struct sbuf *sb) {
               CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_JPEG_QUALITY);
 }
 
+void camera_shutdown(struct camera *c) {
+    if (c->wstate != CW_RUNNING && c->wstate != CW_STOPPING) return;
+    if (c->wstate == CW_RUNNING) kill(c->pid, SIGTERM);
+    close_sock(c);
+    int64_t kill_at = mono_ms() + CAMERA_KILL_GRACE_MS;
+    int status = 0;
+    pid_t r;
+    while ((r = waitpid(c->pid, &status, WNOHANG)) == 0 && mono_ms() < kill_at) {
+        struct timespec ten_ms = {0, 10 * 1000 * 1000};
+        nanosleep(&ten_ms, NULL);
+    }
+    if (r == 0) {
+        fprintf(stderr, "tt7d: camera: worker %d still running %d ms after SIGTERM; SIGKILL\n", (int)c->pid,
+                CAMERA_KILL_GRACE_MS);
+        kill(c->pid, SIGKILL);
+        r = waitpid(c->pid, &status, 0);
+    }
+    char how[64] = "already gone";
+    if (r == c->pid && WIFSIGNALED(status)) snprintf(how, sizeof how, "killed by signal %d", WTERMSIG(status));
+    else if (r == c->pid) snprintf(how, sizeof how, "exit status %d", WEXITSTATUS(status));
+    fprintf(stderr, "tt7d: camera: worker %d stopped before tt7d exits (%s)\n", (int)c->pid, how);
+    c->pid = 0;
+    c->wstate = CW_OFF;
+}
+
 void camera_state_member(const struct camera *c, struct sbuf *sb) {
     static const char *const states[] = {"off", "running", "stopping", "restarting"};
     int presence_on = c->cfg.enabled && c->cfg.presence;

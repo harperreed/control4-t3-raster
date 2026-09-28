@@ -80,7 +80,7 @@ already visible on the glass. Revisit this when the panel shows anything private
 | Endpoint | Returns |
 |---|---|
 | `GET /info` | `device_id`, `model`, `firmware_version`, `build`; `display` {`width`, `height`, `rotation`, `frame_formats`, `max_frame_bytes`, `native` {`width`, `height`, `format`, `stride`, `bits_per_pixel`}}; `capabilities` read from sysfs at request time, plus `capabilities.input` from the open input devices (see "Input (M3)"); `auth` |
-| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`} (what the screen shows: a frame, or the fallback clock), `power`, `network.interfaces`, `fallback` {`active`, `reason` (`no_frame_since_boot`, `server_timeout` or null), `timeout_s`, `since` (null when not active)}, `clock` {`synced`, `synced_at`, `timezone`, `format` (`24h`/`12h`)}, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`}; `input` {`last_touch`, `last_button` (ISO times or null), `event_clients`, `event_clients_dropped_slow`}; `camera` (see "Camera") |
+| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`} (what the screen shows: a frame, or the fallback clock), `power`, `network.interfaces`, `fallback` {`active`, `reason` (`no_frame_since_boot`, `server_timeout` or null), `timeout_s`, `since` (null when not active)}, `clock` {`synced`, `synced_at`, `timezone`, `format` (`24h`/`12h`)}, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`}; `input` {`last_touch`, `last_button` (ISO times or null), `event_clients`, `event_clients_dropped_slow`}; `camera` (see "Camera"); `update` {`release` (the web-installed release tt7d runs from, null for the image's own build), `restart_pending`} (the rest is at `GET /system/update`) |
 | `GET /events` | The input event stream, a WebSocket. Needs the token (see "Input (M3)") |
 | `GET /config/mqtt` | The MQTT settings in effect (see below). Needs the token |
 | `PUT /config/mqtt` | Body: a JSON object of MQTT settings. Needs the token and `Content-Type: application/json`; at most 4096 bytes |
@@ -904,7 +904,9 @@ will say. The HTTP loop is blocked for that long.
 
 ### Restart and rollback
 
-After the 202, tt7d exits with status 75. tt7-app sees 75 and execs its entry
+After the 202, tt7d stops the camera worker if one runs (SIGTERM, so it
+closes the camera; SIGKILL after 1 s) and reaps it, so the next tt7d finds
+the camera free. Then it exits with status 75. tt7-app sees 75 and execs its entry
 script again (`/data/tt7/app`, or `/usr/bin/tt7-app` if there is none), which
 runs `select_release` and execs the chosen release's own `app`. No reboot: a
 bundle changes nothing that init or the kernel use, and a reboot costs about

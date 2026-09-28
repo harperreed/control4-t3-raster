@@ -302,6 +302,8 @@ static void state_json(struct app *a, struct sbuf *sb) {
     events_state_member(&a->events, sb);
     sb_puts(sb, ",");
     camera_state_member(&a->camera, sb);
+    sb_puts(sb, ",");
+    update_state_member(&a->update, sb);
     sb_puts(sb, "}");
 }
 
@@ -443,7 +445,12 @@ static void app_poll_service(void *ctx, const struct pollfd *pfd, int n) {
     fallback_screen_service(&a->fallback);
     events_service(&a->events, pfd + 1, a->n_event_fds);
     camera_service(&a->camera, pfd + 1 + a->n_event_fds, n - 1 - a->n_event_fds);
-    update_service(&a->update); /* last: it may exit to restart into a new release */
+    if (update_service(&a->update)) { /* last: the restart into a new release */
+        camera_shutdown(&a->camera);
+        fprintf(stderr, "tt7d: exiting with status %d so tt7-app starts the new release\n", UPDATE_EXIT_RESTART);
+        fflush(stderr);
+        exit(UPDATE_EXIT_RESTART);
+    }
 }
 
 static int app_take_over(void *ctx, int fd, const struct http_request *req) {
