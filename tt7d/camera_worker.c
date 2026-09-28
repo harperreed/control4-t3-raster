@@ -127,7 +127,13 @@ static void source_close(struct source *s) {
         free(s->buf);
         s->buf = NULL;
     } else {
+        size_t before = s->log && fflush(s->log) == 0 ? s->log_len : 0;
         cam_close(&s->cam); /* STREAMOFF before the ion buffer goes away (capture.h) */
+        /* cam_close logs only "STREAMOFF ok" when all went well; anything
+         * else (a failed STREAMOFF, munmap, close or ION_FREE) goes to app.log. */
+        if (s->log && fflush(s->log) == 0 && s->log_len > before &&
+            strcmp(s->log_text + before, "tt7cam: STREAMOFF ok\n") != 0)
+            source_dump_log(s);
         if (s->log) fclose(s->log);
         free(s->log_text);
         s->log = NULL;
