@@ -189,6 +189,16 @@ def check_jpeg(data, scene=None):
 
 # ---- steps ----
 
+def test_panel_section(d):
+    status, headers, page = d.request("GET", "/")
+    assert status == 200 and b'<script src="/camera.js" defer></script>' in page and b'id="camera"' in page
+    status, headers, js = d.request("GET", "/camera.js")
+    assert status == 200 and headers["content-type"] == "text/javascript; charset=utf-8", (status, headers)
+    assert js.startswith(b"// ABOUTME:") and headers["content-security-policy"] == test_e2e.CSP
+    # The snapshot is shown as a data: URL, which the unchanged img-src allows; no HTML is ever built from text.
+    assert b"readAsDataURL" in js and b"innerHTML" not in js and b"insertAdjacentHTML" not in js
+
+
 def test_off_by_default(d, obs, base, device_id):
     info = d.get_json("/api/v1/info", token=False)
     cam = info["capabilities"]["camera"]
@@ -442,6 +452,8 @@ def main():
             device_id = d.get_json("/api/v1/info", token=False)["device_id"]
             base = f"tt7/{device_id}"
             wait_for("MQTT connected", lambda: d.get_json("/api/v1/state")["mqtt"]["connected"])
+            steps.append("control panel: Camera section and /camera.js under the same CSP")
+            test_panel_section(d)
             steps.append("off by default: 503 camera_disabled, 401 without the token, no HA entities")
             test_off_by_default(d, obs, base, device_id)
             steps.append("PUT /api/v1/config/camera: token, validation, camera.conf, config_revision, HA camera entity")

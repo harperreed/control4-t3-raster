@@ -1,6 +1,6 @@
 <!doctype html>
-<!-- ABOUTME: tt7d's local control panel (SPEC 29-31): overview, display, input, hardware, system, logs, actions. -->
-<!-- ABOUTME: Compiled into tt7d; the CSP allows only /panel.css and /panel.js, so nothing here is inline. -->
+<!-- ABOUTME: tt7d's local control panel (SPEC 29-31): overview, display, input, camera, hardware, system, logs, actions. -->
+<!-- ABOUTME: Compiled into tt7d; the CSP allows only its own /panel.css, /panel.js and /camera.js, so nothing here is inline. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -9,6 +9,7 @@
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/panel.css">
 <script src="/panel.js" defer></script>
+<script src="/camera.js" defer></script>
 </head>
 <body>
 <header class="top">
@@ -20,6 +21,7 @@
     <a href="#overview">Overview</a>
     <a href="#display">Display</a>
     <a href="#input">Input</a>
+    <a href="#camera">Camera</a>
     <a href="#hardware">Hardware</a>
     <a href="#system">System</a>
     <a href="#logs">Logs</a>
@@ -84,6 +86,29 @@
   <h2>Input <span id="input-state" class="badge">locked</span></h2>
   <p id="input-msg" class="msg muted">Unlock to watch touches and button presses live. A dot on the preview shows where the screen is touched.</p>
   <ol id="input-log" class="log input-log"></ol>
+</section>
+
+<section id="camera" class="card">
+  <h2>Camera <span id="camera-state" class="badge">off</span></h2>
+  <p class="msg muted">Off unless you turn it on. Snapshots stay in the panel's memory and in this page; nothing is written to its storage.</p>
+  <div class="split">
+    <figure class="preview">
+      <img id="camera-img" class="camera-img" alt="The latest camera snapshot" hidden>
+      <figcaption id="camera-cap" class="preview-note muted">No snapshot shown</figcaption>
+    </figure>
+    <div>
+      <dl id="camera-list" class="kv"></dl>
+      <div class="toggles">
+        <label><input id="camera-enabled" type="checkbox" data-needs-token> Camera on</label>
+        <label><input id="camera-presence" type="checkbox" data-needs-token> Presence detection</label>
+        <label><input id="camera-wake" type="checkbox" data-needs-token> Presence wakes a blank display</label>
+      </div>
+      <div class="buttons">
+        <button id="camera-snapshot" type="button" data-needs-token>Take snapshot</button>
+      </div>
+      <p id="camera-msg" class="msg" role="status"></p>
+    </div>
+  </div>
 </section>
 
 <section id="hardware" class="card">
