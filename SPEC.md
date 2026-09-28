@@ -1444,6 +1444,8 @@ When the condition holds, `tt7d` renders a fallback screen itself: a large clock
 
 Servers that update rarely keep the display with `POST /api/v1/heartbeat`. Re-sending the current frame also counts, and deduplication keeps that cheap.
 
+A heartbeat only restarts the timer. While the fallback screen shows, a heartbeat leaves it there: there is no fresh frame to show, and the old one may be stale. The next accepted frame (a re-sent one included) ends the fallback. A persisted frame restored at boot counts as a frame, so it shows for one timeout before the clock.
+
 The clock MUST NOT show a time until the system clock is synchronized (NTP). Until then the fallback shows the status line and a "setting clock" notice. Timezone is configurable.
 
 The fallback screen is the one deliberate exception to §2.1: a failure-mode display, not application UI.

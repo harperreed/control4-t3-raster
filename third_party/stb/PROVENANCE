@@ -1,0 +1,17 @@
+stb_truetype: single-file TrueType rasterizer, vendored for tt7d's fallback clock (tt7d/font.c).
+
+Source:   https://github.com/nothings/stb
+Commit:   2c980bb59875b0d32144a71867fbdebb2f77cd20 (repo master on 2026-09-27; committed 2026-08-02;
+          the same commit cam-spike vendors stb_image_write from)
+Version:  stb_truetype v1.26
+License:  public domain (Unlicense) or MIT, your choice (LICENSE, copied unmodified from the same commit;
+          the same text also closes stb_truetype.h)
+Fetched:  curl -sSfL https://raw.githubusercontent.com/nothings/stb/<commit>/<file>
+
+sha256 (files are byte-identical to upstream; nothing is modified):
+ecd30b05e0dd4fea3a13c26810dd9e1992dc379049482c393d5a19e6b5090aab  stb_truetype.h
+bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63  LICENSE
+
+Build: tt7d/font.c defines STB_TRUETYPE_IMPLEMENTATION and STBTT_STATIC, and
+only feeds it the Inter subsets embedded at build time
+(third_party/fonts/inter/PROVENANCE), never fonts from the network.

@@ -10,6 +10,7 @@
 
 #include "display.h"
 #include "events.h"
+#include "fallback_screen.h"
 #include "frame.h"
 #include "ident.h"
 #include "mqtt.h"
@@ -17,6 +18,7 @@
 #include "render.h"
 #include "server.h"
 #include "sysinfo.h"
+#include "timesync.h"
 
 #define FIRMWARE_VERSION "0.1.0"
 #ifndef TT7D_VERSION
@@ -43,6 +45,11 @@ struct config {
     const char *mqtt_flags[2 * MQF_COUNT]; /* --mqtt-KEY VALUE, as key/value pairs */
     char mqtt_keys[MQF_COUNT][32];
     int n_mqtt_flags;
+    /* The fallback clock (SPEC 41.1). */
+    unsigned fallback_timeout_s;
+    int clock_hour12;
+    const char *tz; /* NULL: <data-dir>/tz, else the default */
+    const char *ntp_marker;
 };
 
 struct app {
@@ -52,6 +59,7 @@ struct app {
     struct panel panel;
     struct mqtt_app mqtt;
     struct events events;
+    struct fallback_screen fallback;
     char token[256];
     char device_id[32]; /* "" if device.json is unusable: reported as null */
     struct timespec started;
@@ -81,6 +89,13 @@ static void usage(FILE *out) {
             "  --mqtt-KEY VALUE          override one <data-dir>/mqtt.conf setting (tt7d/README.md): enabled,\n"
             "                            host, port, username, password-file, prefix, client-id, keepalive,\n"
             "                            telemetry-interval, ha-discovery, allow-reboot-cmd\n"
+            "  --fallback-timeout S      show the fallback clock when no frame or heartbeat came for S seconds,\n"
+            "                            and before the first frame (default 300; 0 = never)\n"
+            "  --clock-format 24|12      the fallback clock's hours (default 24)\n"
+            "  --tz POSIX-TZ             timezone as a POSIX TZ string (default: first line of <data-dir>/tz,\n"
+            "                            else " TIMESYNC_DEFAULT_TZ ", America/Chicago)\n"
+            "  --ntp-marker PATH         the file tt7-ntp-hook writes once NTP set the clock; no time is shown\n"
+            "                            before it exists (default " TIMESYNC_DEFAULT_MARKER ")\n"
             "  --version, --help\n");
 }
 
@@ -96,7 +111,8 @@ static int parse_uint(const char *s, unsigned long max, unsigned long *out) {
 static int parse_args(int argc, char **argv, struct config *c) {
     *c = (struct config){.listen = "0.0.0.0:80", .fb = "/dev/fb0", .rotation = 90, .data_dir = "/data/tt7/tt7d",
                          .sysfs_root = "/sys", .proc_root = "/proc", .log_file = "/data/tt7/app.log",
-                         .reboot_cmd = "reboot -f", .input_dir = "/dev/input", .max_frame_bytes = 8u << 20, .timeout_ms = 30000};
+                         .reboot_cmd = "reboot -f", .input_dir = "/dev/input", .max_frame_bytes = 8u << 20,
+                         .timeout_ms = 30000, .fallback_timeout_s = 300, .ntp_marker = TIMESYNC_DEFAULT_MARKER};
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) {
@@ -124,6 +140,10 @@ static int parse_args(int argc, char **argv, struct config *c) {
         else if (!strcmp(a, "--log-file")) c->log_file = v;
         else if (!strcmp(a, "--reboot-cmd") && *v) c->reboot_cmd = v;
         else if (!strcmp(a, "--input-dir")) c->input_dir = v;
+        else if (!strcmp(a, "--fallback-timeout") && parse_uint(v, 7 * 86400, &n) == 0) c->fallback_timeout_s = (unsigned)n;
+        else if (!strcmp(a, "--clock-format") && (!strcmp(v, "24") || !strcmp(v, "12"))) c->clock_hour12 = v[0] == '1';
+        else if (!strcmp(a, "--tz") && timesync_tz_valid(v)) c->tz = v;
+        else if (!strcmp(a, "--ntp-marker") && *v) c->ntp_marker = v;
         else if (!strcmp(a, "--fb-stride") && parse_uint(v, 1u << 20, &n) == 0) c->fb_stride = (unsigned)n;
         else if (!strcmp(a, "--rotation") && parse_uint(v, 270, &n) == 0 && render_rotation_valid((int)n))
             c->rotation = (int)n;
@@ -184,7 +204,7 @@ static void info_json(struct app *a, struct sbuf *sb) {
     sb_puts(sb, "},\"auth\":{\"scheme\":\"bearer\",\"required_for\":[\"PUT /api/v1/frame\",\"GET /api/v1/logs\","
                 "\"PUT /api/v1/display/brightness\",\"POST /api/v1/display/blank\",\"POST /api/v1/display/wake\","
                 "\"POST /api/v1/display/test-pattern\",\"POST /api/v1/system/reboot\",\"GET /api/v1/config/mqtt\","
-                "\"PUT /api/v1/config/mqtt\",\"GET /api/v1/events\"]}}");
+                "\"PUT /api/v1/config/mqtt\",\"GET /api/v1/events\",\"POST /api/v1/heartbeat\"]}}");
 }
 
 static double seconds_since(const struct timespec *t, clockid_t clock) {
@@ -208,11 +228,16 @@ static void state_json(struct app *a, struct sbuf *sb) {
     if (pct >= 0) sb_printf(sb, ",\"brightness\":{\"value\":%d,\"unit\":\"percent\",\"available\":true}", pct);
     else sb_puts(sb, ",\"brightness\":{\"value\":null,\"unit\":\"percent\",\"available\":false}");
     const struct frame_store *fs = &a->frames;
+    const char *id; /* what the screen shows: a frame, or the fallback clock */
+    double age;
+    fallback_screen_current(&a->fallback, fs, &id, &age);
     sb_puts(sb, ",\"frame_id\":");
-    sb_json_str(sb, fs->have && fs->id[0] ? fs->id : NULL);
-    if (fs->have) sb_printf(sb, ",\"frame_age_s\":%.3f}", seconds_since(&fs->received_mono, CLOCK_MONOTONIC));
+    sb_json_str(sb, id);
+    if (age >= 0) sb_printf(sb, ",\"frame_age_s\":%.3f}", age);
     else sb_puts(sb, ",\"frame_age_s\":null}");
 
+    sb_puts(sb, ",");
+    fallback_screen_state_members(&a->fallback, sb);
     sb_puts(sb, ",");
     sysinfo_power(sb, a->cfg.sysfs_root);
     sb_puts(sb, ",");
@@ -269,6 +294,8 @@ static int app_check_head(void *ctx, const struct http_request *req, struct resp
     if (rc != EVENTS_NOT_MINE) return rc;
     rc = panel_check_head(&a->panel, req, resp);
     if (rc != PANEL_NOT_MINE) return rc;
+    rc = fallback_screen_check_head(a->token, req, resp);
+    if (rc != FALLBACK_NOT_MINE) return rc;
     int i = find_route(req->path);
     if (i < 0) {
         resp_error(resp, 404, "not_found", "no such endpoint; see GET /api/v1/info");
@@ -287,7 +314,9 @@ static void app_handle(void *ctx, const struct http_request *req, const uint8_t 
                        struct response *resp) {
     struct app *a = ctx;
     resp->status = 200;
-    if (find_route(req->path) < 0) {
+    if (!strcmp(req->path, "/api/v1/heartbeat")) {
+        fallback_screen_handle(&a->fallback, resp);
+    } else if (find_route(req->path) < 0) {
         panel_handle(&a->panel, req, body, len, resp);
     } else if (is_frame_put(req)) {
         frame_put(&a->frames, req, body, len, resp);
@@ -297,6 +326,9 @@ static void app_handle(void *ctx, const struct http_request *req, const uint8_t 
         state_json(a, &resp->body);
     } else if (!strcmp(req->path, "/api/v1/config/mqtt")) {
         mqtt_http_handle(&a->mqtt, req, body, len, resp);
+    } else if (fallback_screen_showing(&a->fallback)) { /* never a server frame: no dedup, no persistence */
+        if (!strcmp(req->path, "/api/v1/frame")) fallback_screen_frame_json(&a->fallback, &resp->body);
+        else fallback_screen_image(&a->fallback, resp);
     } else if (!a->frames.have) {
         resp_error(resp, 404, "no_frame", "no frame has been shown since tt7d started");
     } else if (!strcmp(req->path, "/api/v1/frame")) {
@@ -314,7 +346,10 @@ static void app_on_reply(void *ctx, const struct http_request *req, const struct
         a->frames.rejected++;
         a->frames.last_error = resp->error;
     }
-    if (is_frame_put(req) && resp->status == 200) mqtt_app_frame_accepted(&a->mqtt);
+    if (is_frame_put(req) && resp->status == 200) {
+        fallback_screen_frame_accepted(&a->fallback); /* a duplicate counts too: it is a heartbeat */
+        mqtt_app_frame_accepted(&a->mqtt);
+    }
     /* Brightness, blank, wake or the test pattern changed what MQTT reports. */
     if (!strncmp(req->path, "/api/v1/display/", 16) && resp->status == 200) mqtt_app_state_changed(&a->mqtt);
 }
@@ -328,16 +363,21 @@ static int mqtt_wake(void *ctx) { return panel_wake(ctx) == PANEL_OK ? 0 : -1; }
 static int mqtt_reboot(void *ctx) { return panel_reboot(ctx) == PANEL_OK ? 0 : -1; }
 
 /* Poll entries: the MQTT socket first (fd -1 when there is none, which
- * poll() skips), then the input devices and WebSocket clients. */
+ * poll() skips), then the input devices and WebSocket clients. The fallback
+ * clock has no descriptor, only a deadline in *wait_ms. */
 static int app_poll_prepare(void *ctx, struct pollfd *pfd, int max, int64_t *wait_ms) {
     struct app *a = ctx;
     mqtt_app_prepare(&a->mqtt, &pfd[0], wait_ms);
+    fallback_screen_prepare(&a->fallback, wait_ms);
     return 1 + events_prepare(&a->events, pfd + 1, max - 1, wait_ms);
 }
 
+/* The fallback clock before the input, so an event's frame_id names what
+ * is on screen after this wakeup's switch, if any. */
 static void app_poll_service(void *ctx, const struct pollfd *pfd, int n) {
     struct app *a = ctx;
     mqtt_app_service(&a->mqtt, pfd[0].revents);
+    fallback_screen_service(&a->fallback);
     events_service(&a->events, pfd + 1, n - 1);
 }
 
@@ -383,10 +423,24 @@ int main(int argc, char **argv) {
     if (rc < 0) fprintf(stderr, "tt7d: not restoring the last frame: %s\n", err);
     if (rc > 0) fprintf(stderr, "tt7d: restored last-frame.png (frame id %s)\n", a.frames.id[0] ? a.frames.id : "unknown");
 
+    /* The fallback clock (SPEC 41.1). A restored frame counts as a frame, so
+     * it stays up for one timeout before the clock replaces it. */
+    char tz[64];
+    if (timesync_tz_choose(a.cfg.tz, a.cfg.data_dir, tz, sizeof tz, err, sizeof err) != 0)
+        fprintf(stderr, "tt7d: %s\n", err);
+    timesync_tz_apply(tz);
+    struct fallback_screen_config fc = {.timeout_s = a.cfg.fallback_timeout_s, .hour12 = a.cfg.clock_hour12,
+                                        .marker = a.cfg.ntp_marker, .tz = tz};
+    if (fallback_screen_init(&a.fallback, &fc, &a.disp, &a.frames, rc > 0, err, sizeof err) != 0) {
+        fprintf(stderr, "tt7d: %s\n", err);
+        return 1;
+    }
+    fallback_screen_service(&a.fallback); /* the clock goes up now, before HTTP and MQTT */
+
     a.panel = (struct panel){.sysfs_root = a.cfg.sysfs_root, .proc_root = a.cfg.proc_root, .data_dir = a.cfg.data_dir,
                              .log_file = a.cfg.log_file, .reboot_cmd = a.cfg.reboot_cmd, .token = a.token,
                              .firmware_version = FIRMWARE_VERSION, .build = TT7D_VERSION, .disp = &a.disp,
-                             .frames = &a.frames};
+                             .frames = &a.frames, .ntp_marker = a.cfg.ntp_marker};
     panel_init(&a.panel);
 
     /* MQTT after the display is up: a broker problem never delays the screen.
@@ -398,10 +452,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "tt7d: %s\n", err);
         return 2;
     }
+    a.mqtt.screen = &a.fallback;
 
     /* Input after MQTT (button events go there too); like MQTT, a missing
      * device never stops the display. */
-    events_init(&a.events, a.cfg.input_dir, a.cfg.sysfs_root, &a.disp, &a.frames, &a.mqtt, a.token, a.device_id);
+    events_init(&a.events, a.cfg.input_dir, a.cfg.sysfs_root, &a.disp, &a.frames, &a.fallback, &a.mqtt, a.token,
+                a.device_id);
 
     struct server_config sc = {.listen = a.cfg.listen, .max_head = 8192, .max_body = a.cfg.max_frame_bytes,
                                .timeout_ms = a.cfg.timeout_ms, .max_connections = 8};

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ABOUTME: Download the pinned third-party source tarballs into third_party/src and check their sha256.
-# ABOUTME: Usage: scripts/fetch-sources.sh [busybox|dropbear|wpa|libnl-tiny]...  (no args = all). Safe to re-run.
+# ABOUTME: Usage: scripts/fetch-sources.sh [busybox|dropbear|wpa|libnl-tiny|inter]...  (no args = all but inter). Safe to re-run.
 #
 # Pins: change a version here and nowhere else. Hashes were checked against
 # busybox.net's .sha256 file and matt.ucc.asn.au's SHA256SUM.asc (2026-09-27;
@@ -25,9 +25,13 @@ LIBNL_TINY_COMMIT=40493a655d8caa2ccf5206dde1e733abe2920432   # openwrt/libnl-tin
 URL[libnl-tiny]="https://codeload.github.com/openwrt/libnl-tiny/tar.gz/$LIBNL_TINY_COMMIT"
 FILE[libnl-tiny]="libnl-tiny-$LIBNL_TINY_COMMIT.tar.gz"
 SHA[libnl-tiny]="a3f0456006b72352f0ccc9a653eb2428a03bc3ff3c6987a858b0c060ac19b181"
+# Inter (SIL OFL 1.1): only tools/subset-fonts.sh uses it; the build uses the
+# subsets committed under third_party/fonts/inter. Hash recorded 2026-09-28.
+URL[inter]="https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip"
+SHA[inter]="9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e"
 
 names=("$@")
-[[ ${#names[@]} -gt 0 ]] || names=(busybox dropbear wpa libnl-tiny)
+[[ ${#names[@]} -gt 0 ]] || names=(busybox dropbear wpa libnl-tiny)  # inter: only on request (tools/subset-fonts.sh)
 mkdir -p "$dest"
 
 for name in "${names[@]}"; do

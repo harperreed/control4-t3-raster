@@ -17,9 +17,11 @@ static int64_t mono_ms(void) {
 
 /* ,"frame_id":...,"timestamp":...,"monotonic_ms":...} closing an event object. */
 static void event_tail(const struct events *e, struct sbuf *sb, const struct timespec *wall, int64_t mono) {
-    const struct frame_store *fs = e->frames;
+    const char *id; /* what the screen shows: a frame, or the fallback clock */
+    double age;
+    fallback_screen_current(e->screen, e->frames, &id, &age);
     sb_puts(sb, ",\"frame_id\":");
-    sb_json_str(sb, fs->have && fs->id[0] ? fs->id : NULL);
+    sb_json_str(sb, id);
     sb_puts(sb, ",\"timestamp\":");
     sb_json_time(sb, wall);
     sb_printf(sb, ",\"monotonic_ms\":%lld}", (long long)mono);
@@ -67,10 +69,12 @@ static void on_button(void *ctx, const struct input_device *d, int code, int pre
 }
 
 void events_init(struct events *e, const char *input_dir, const char *sysfs_root, const struct display *disp,
-                 const struct frame_store *frames, struct mqtt_app *mqtt, const char *token, const char *device_id) {
+                 const struct frame_store *frames, const struct fallback_screen *screen, struct mqtt_app *mqtt,
+                 const char *token, const char *device_id) {
     memset(e, 0, sizeof *e);
     e->disp = disp;
     e->frames = frames;
+    e->screen = screen;
     e->mqtt = mqtt;
     e->token = token;
     e->device_id = device_id;

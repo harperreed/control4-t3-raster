@@ -48,6 +48,8 @@ install -D -m 0755 "$b/tt7probe" "$rfs/usr/bin/tt7probe"
 install -D -m 0755 "$root/probe/tt7-app.sh" "$rfs/usr/bin/tt7-app"
 install -D -m 0755 "$root/probe/tt7-discover.sh" "$rfs/usr/bin/tt7-discover"
 install -D -m 0755 "$root/probe/tt7-wifi-start.sh" "$rfs/usr/bin/tt7-wifi-start"
+# BusyBox ntpd's -S hook: writes the sync marker the fallback clock waits for.
+install -D -m 0755 "$root/probe/tt7-ntp-hook.sh" "$rfs/usr/bin/tt7-ntp-hook"
 
 # Wi-Fi userspace. init loads the driver; tt7-wifi-start runs these.
 install -D -m 0755 "$b/wifi/wpa_supplicant" "$rfs/usr/sbin/wpa_supplicant"

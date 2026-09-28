@@ -105,3 +105,11 @@
 - Browsers cannot set `Authorization` on a WebSocket, so `GET /api/v1/events` also takes `?token=`. The server logs only the path, never the query.
 - Host tests cannot fake evdev (`/dev/uinput` needs root). tt7d's `--input-dir` takes FIFOs; their capabilities come from the sysfs modalias, their ranges from `eventN.absinfo` (tt7d/README.md "Testing without evdev").
 - `pkill -f <pattern>` from a Claude Bash call also kills the calling shell when the pattern appears in the command line (exit 144). Kill by PID.
+
+## Fallback clock + NTP (2026-09-28, branch tt7d-fallback-clock; host-tested only)
+- BusyBox 1.36.1 ntpd's `-S` hook gets `step|stratum|periodic|unsync` in argv and `stratum`, `offset`, `freq_drift_ppm`, `poll_interval` in the env (networking/ntpd.c `run_script`). On `step`, `$stratum` is already 16 (ntpd resets it just before), so "stratum < 16" alone would miss the first sync. `tt7-ntp-hook` counts a step as synced.
+- Don't use `adjtimex` to ask "is the clock synced" with BusyBox ntpd: it never sets `ADJ_MAXERROR` (commented out in ntpd.c), so `STA_UNSYNC` is not a reliable signal. tt7d reads the hook's marker `/run/tt7/ntp-synced` (RAM) instead.
+- ntpd backs off failed DNS lookups to minutes (`HOSTNAME_INTERVAL * dns_errors`, up to 4 × 63 s). tt7-app waits for a default route before starting it, so "Setting clock…" doesn't linger after Wi-Fi connects.
+- BusyBox's usage text is compressed in our build (`CONFIG_FEATURE_COMPRESS_USAGE`), so grepping the binary for usage strings fails; check-image looks for `freq_drift_ppm` (from `run_script`) instead.
+- musl + no zoneinfo files: TZ must be a POSIX string (`CST6CDT,M3.2.0,M11.1.0`), never `America/Chicago`. tt7d refuses zone names.
+- The test_e2e/test_mqtt_e2e daemons: test_e2e runs with `--fallback-timeout 0` (it checks an untouched fb before the first frame); the fallback has its own `test_fallback_e2e.py`.

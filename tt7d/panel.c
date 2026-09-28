@@ -22,6 +22,7 @@
 #include "render.h"
 #include "sha256.h"
 #include "sysinfo.h"
+#include "timesync.h"
 
 #define LOG_TAIL_BYTES (256 * 1024) /* how much of the log file end is read for a tail */
 
@@ -393,9 +394,12 @@ static void system_json(struct panel *p, struct sbuf *sb) {
 
     sb_puts(sb, "}],\"time\":{\"now\":");
     sb_json_time(sb, &now);
-    /* Nothing sets the clock yet (no NTP); a 1970 date means "unset". */
-    sb_printf(sb, ",\"plausible\":%s,\"timezone\":\"UTC\",\"synchronized\":null}}",
-              clock_plausible(now.tv_sec) ? "true" : "false");
+    /* `now` is UTC. A 1970 date means "never set"; synchronized means NTP set
+     * it this boot (the tt7-ntp-hook marker, timesync.h). */
+    time_t synced_at;
+    sb_printf(sb, ",\"plausible\":%s,\"timezone\":\"UTC\",\"synchronized\":%s}}",
+              clock_plausible(now.tv_sec) ? "true" : "false",
+              !p->ntp_marker ? "null" : timesync_synced(p->ntp_marker, now.tv_sec, &synced_at) ? "true" : "false");
 }
 
 static void hardware_json(struct panel *p, struct sbuf *sb) {

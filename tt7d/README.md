@@ -3,8 +3,10 @@
 tt7d shows PNG frames that a server PUTs over HTTP on the C4-TT7's framebuffer
 (SPEC.md milestones M1 and M2), streams touches and button presses back over a
 WebSocket (M3, see "Input (M3)" below), and serves a local admin control panel
-at `/` (M4, see "Control panel" below). It is one static C binary with no threads and
-no libraries beyond musl and a vendored PNG decoder.
+at `/` (M4, see "Control panel" below). When no server is talking to it, it
+shows its own clock (SPEC §41.1, see "Fallback clock" below). It is one static
+C binary with no threads and no libraries beyond musl, a vendored PNG codec and
+a vendored TrueType rasterizer.
 
 ## Design in brief
 
@@ -59,11 +61,13 @@ no libraries beyond musl and a vendored PNG decoder.
 | `mqtt-password` | The broker password, first line, mode 0600. Never in `mqtt.conf`, the API, or the log |
 | `config-revision` | The `config_revision` counter (SPEC §35), bumped by every accepted `PUT /config/mqtt` |
 | `mqtt-ha-device` | The device id last announced to Home Assistant, so a changed device id gets its old entities removed |
+| `tz` | Optional. First line: the fallback clock's timezone as a POSIX TZ string (see "Fallback clock"). `--tz` beats it |
+| `ntp.conf` | Optional. `server HOST` lines for ntpd; tt7-app copies it to `/etc/ntp.conf` at boot (see "Fallback clock") |
 
 ## API (`/api/v1`)
 
 Reads need no auth, except `GET /logs`, `GET /config/mqtt` and the
-`GET /events` WebSocket. `PUT /frame`,
+`GET /events` WebSocket. `PUT /frame`, `POST /heartbeat`,
 `GET /logs`, both `/config/mqtt` methods and every control panel action need
 `Authorization: Bearer <token>` (`/info` lists them under `auth.required_for`).
 `GET /frame/image` is also unauthenticated in v1: it returns the frame that is
@@ -72,20 +76,21 @@ already visible on the glass. Revisit this when the panel shows anything private
 | Endpoint | Returns |
 |---|---|
 | `GET /info` | `device_id`, `model`, `firmware_version`, `build`; `display` {`width`, `height`, `rotation`, `frame_formats`, `max_frame_bytes`, `native` {`width`, `height`, `format`, `stride`, `bits_per_pixel`}}; `capabilities` read from sysfs at request time, plus `capabilities.input` from the open input devices (see "Input (M3)"); `auth` |
-| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`}, `power`, `network.interfaces`, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`}; `input` {`last_touch`, `last_button` (ISO times or null), `event_clients`, `event_clients_dropped_slow`} |
+| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`} (what the screen shows: a frame, or the fallback clock), `power`, `network.interfaces`, `fallback` {`active`, `reason` (`no_frame_since_boot`, `server_timeout` or null), `timeout_s`, `since` (null when not active)}, `clock` {`synced`, `synced_at`, `timezone`, `format` (`24h`/`12h`)}, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`}; `input` {`last_touch`, `last_button` (ISO times or null), `event_clients`, `event_clients_dropped_slow`} |
 | `GET /events` | The input event stream, a WebSocket. Needs the token (see "Input (M3)") |
 | `GET /config/mqtt` | The MQTT settings in effect (see below). Needs the token |
 | `PUT /config/mqtt` | Body: a JSON object of MQTT settings. Needs the token and `Content-Type: application/json`; at most 4096 bytes |
-| `GET /frame` | Frame metadata: `frame_id`, `sha256`, `received_at`, `displayed_at`, `width`, `height`, `content_type`, `bytes`, `persisted`, `deduplicated`, `restored`. 404 `no_frame` before the first frame |
-| `GET /frame/image` | The PNG exactly as received (or as restored). 404 `no_frame` before the first frame |
+| `GET /frame` | Frame metadata: `frame_id`, `sha256`, `received_at`, `displayed_at`, `width`, `height`, `content_type`, `bytes`, `persisted`, `deduplicated`, `restored`. While the fallback clock shows: its metadata, `frame_id` `fallback-clock-<unix minute>`, `received_at` null. 404 `no_frame` before the first frame when the fallback is off |
+| `GET /frame/image` | The PNG exactly as received (or as restored). While the fallback clock shows: the clock as a PNG, encoded on request. 404 `no_frame` before the first frame when the fallback is off |
 | `PUT /frame` | Body: a 1280×800 PNG. Headers: `Content-Type: image/png` (required), `X-Frame-ID` (1–128 printable ASCII, no spaces; generated as `tt7d-<24 hex>` if absent), `X-Frame-SHA256` (checked if present), `X-Persist: true\|false`. Replies 200 with the frame metadata |
+| `POST /heartbeat` | Needs the token; send `Content-Length: 0` (`curl -d ''`). Restarts the fallback timer and replies `{"fallback": {...}}` as in `/state`. It keeps a server frame up; during the fallback it changes nothing on screen |
 
 Control panel endpoints (`panel.c`):
 
 | Endpoint | Auth | Does |
 |---|---|---|
 | `GET /hardware` | – | SPEC §20 mappings: `display` (device, native format and stride, rotation, logical size, `blank_method`), `input` (sysfs node, `/dev/input/eventN`, name, `role` touchscreen/buttons/other, known `keys`, `modalias`), `backlight` and `power_supplies` (allowlisted sysfs attributes as raw strings, `null` if missing), `thermal_zones`, `network_interfaces` (operstate, MAC, IPv4), `audio` (`cards` from `/proc/asound/cards`, `null` if unreadable; `devices` from sysfs), `video_devices` |
-| `GET /system` | – | `firmware_version`, `build`, `kernel` (uname), `uptime_s`, `memory` {`total`, `free`, `available`} in kibibytes from `/proc/meminfo` (`available` is null on 3.0), `storage` for the data dir in bytes, `time` {`now`, `plausible` (false before 2024: the clock was never set), `timezone`, `synchronized`: null} |
+| `GET /system` | – | `firmware_version`, `build`, `kernel` (uname), `uptime_s`, `memory` {`total`, `free`, `available`} in kibibytes from `/proc/meminfo` (`available` is null on 3.0), `storage` for the data dir in bytes, `time` {`now`, `plausible` (false before 2024: the clock was never set), `timezone`, `synchronized` (true once tt7-ntp-hook wrote its marker this boot)} |
 | `GET /logs?lines=N` | token | The last N (1–2000, default 200) lines of `--log-file` and of the kernel log (`klogctl`). Non-ASCII bytes become `?`. `kernel.available` is false with an `error` when klogctl is refused |
 | `PUT /display/brightness` | token | Body `{"value": N}` (raw, 0..max_brightness) or `{"value": N, "unit": "percent"}` (0..100). Writes the first backlight's `brightness` |
 | `POST /display/blank` | token | Remembers the current level and writes brightness 0. Idempotent |
@@ -205,8 +210,10 @@ object each, never fragmented. The first is `hello`:
 ```
 
 `action` is `down`, `move` or `up` for touch and `press` or `release` for
-buttons. `frame_id` is the frame on screen when tt7d read the event: null
-before the first frame, or for a restored frame whose id was lost.
+buttons. `frame_id` is what the screen showed when tt7d read the event, the
+same value as `/state`'s `display.frame_id`: the frame's id, the fallback
+clock's `fallback-clock-<unix minute>`, or null (nothing drawn yet, or a
+restored frame whose id was lost).
 `timestamp` is the wall clock (wrong until something sets the clock), and
 `monotonic_ms` is `CLOCK_MONOTONIC`. tt7d takes both when it reads the event.
 
@@ -328,12 +335,105 @@ trick a click on Reboot. There are no CORS headers. The page builds all text
 with `textContent`; `test_assets` fails the build if `innerHTML`, inline
 script or style, or `localStorage` show up.
 
+## Fallback clock (SPEC §41.1)
+
+"If it can't find the server it is expecting it should show a nice date,
+clock on the screen. That is the failure mode." tt7d has no server address:
+it only receives frames. So "server missing" means no frame since boot, or
+no frame and no heartbeat for `--fallback-timeout` seconds (default 300,
+0 turns the fallback off). Then tt7d draws its own screen: the time (Inter
+Display Light, 300 px), the date below it ("Monday, 28 September 2026",
+English names), and a status line `waiting for server · <ip>` (the Wi-Fi
+address, else any non-loopback IPv4). Renders from the unit test:
+`build/host/clockface-{24h,12h,unsynced}.png`.
+
+The rules (`fallback.h`, unit-tested in `test_fallback.c`):
+
+- Boot: the clock shows until the first accepted frame. A restored
+  `last-frame.png` counts as a frame at boot, so it stays up for one timeout,
+  then the clock replaces it.
+- Any accepted frame PUT, a duplicate included, ends the fallback at once and
+  restarts the timer. The frame is drawn even if it is the one that was on
+  screen before the clock (the clock clears the frame store's `on_screen`).
+- `POST /heartbeat` restarts the timer and nothing else. It keeps a server
+  frame up, but during the fallback it does not bring the old frame back:
+  that frame may be stale, and the server can re-send it (cheap, see dedup).
+- The clock is never a server frame: no dedup against it, never persisted,
+  not counted in `frames.accepted`. `/state`'s `display.frame_id` and
+  `frame_age_s` (and the MQTT state's) describe what is on screen, so they
+  show `fallback-clock-<unix minute>` and the age of that drawing.
+- The panel's test pattern drawn during the fallback stays until the clock's
+  words next change (at most a minute).
+
+Redraws happen only when the words change: at the minute boundary, when the
+clock gets synchronized, and when the IP changes (checked every 5 s). Each
+redraw is one full-screen convert and copy through `display_draw` and
+`display_present`, the path frames take, so rotation and pixel format are
+shared. tt7d logs only the transitions into the fallback.
+
+**Never a wrong time.** tt7d shows no time and no date until NTP has set the
+clock in this boot. Until then the screen says "Setting clock…" and the
+status line. "Synced" means the file `/run/tt7/ntp-synced` (`--ntp-marker`)
+holds `synced <unix seconds> <action> ...`, and the clock reads 2026 or later.
+The file lives on the ramdisk, so no marker survives a reboot. BusyBox
+`ntpd -S tt7-ntp-hook` writes it (`probe/tt7-ntp-hook.sh`). Per BusyBox
+1.36.1 `networking/ntpd.c` `run_script()`, ntpd runs the hook with
+`step`, `stratum`, `periodic` or `unsync` as its argument and `stratum`,
+`offset`, `freq_drift_ppm` and `poll_interval` in the environment. The hook
+counts `step` as synced (ntpd sets its stratum to 16 just before that call),
+and `stratum`/`periodic` when the stratum is below 16. `unsync` leaves the
+marker: the clock was set this boot and drifts slowly. Why not `adjtimex`:
+BusyBox ntpd sets `ADJ_OFFSET | ADJ_STATUS | ADJ_TIMECONST` and has
+`ADJ_MAXERROR` commented out (ntpd.c), so the kernel's maxerror keeps
+growing and, as far as I know the kernel's NTP code (not checked against the
+3.0 source), it sets `STA_UNSYNC` again once maxerror passes 16 s.
+
+**NTP servers.** tt7-app writes `/etc/ntp.conf` from `<data-dir>/ntp.conf`
+if it exists, else `server 0.pool.ntp.org` … `3.pool.ntp.org`, and starts
+`ntpd -n -S tt7-ntp-hook` once a default route exists. DNS comes from the
+udhcpc script (`/usr/share/udhcpc/default.script` writes `/etc/resolv.conf`
+from the lease). If the network has no DNS, use IP literals:
+
+```sh
+printf 'server 192.168.23.1\nserver 162.159.200.1\n' | ssh $S $P 'cat > /data/tt7/tt7d/ntp.conf'   # then reboot
+```
+
+**Timezone.** musl reads POSIX TZ strings, and the image ships no zoneinfo
+files, so zone names like `America/Chicago` don't work. The default is
+`CST6CDT,M3.2.0,M11.1.0` (America/Chicago: UTC−6, UTC−5 from the second
+Sunday of March to the first Sunday of November, changing at 02:00). Set
+another with `--tz` or the first line of `<data-dir>/tz`, then restart tt7d:
+
+```sh
+echo 'EST5EDT,M3.2.0,M11.1.0' | ssh $S $P 'cat > /data/tt7/tt7d/tz && killall tt7d'   # US Eastern
+echo 'CET-1CEST,M3.5.0,M10.5.0/3' | ssh $S $P 'cat > /data/tt7/tt7d/tz && killall tt7d'   # Central Europe
+echo 'UTC0' | ssh $S $P 'cat > /data/tt7/tt7d/tz && killall tt7d'
+```
+
+A value that isn't a POSIX TZ string (a name, then an offset) is refused:
+`--tz` stops tt7d with exit 2; a bad `tz` file is logged and the default used.
+`--clock-format 12` shows `2:05` with a smaller `PM`; the default is `14:05`.
+
+**Heartbeat**, for a server that updates rarely:
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $T" -d '' http://$P/api/v1/heartbeat
+# {"fallback":{"active":false,"reason":null,"timeout_s":300,"since":null}}
+```
+
+**Font.** Inter 4.1 (SIL OFL 1.1), subset to printable ASCII plus `·` and
+`…` by `tools/subset-fonts.sh`: two files, 34 KB together
+(`third_party/fonts/inter/PROVENANCE`). stb_truetype v1.26 rasterizes them
+(`third_party/stb/PROVENANCE`). The PNG encoder half of lodepng is now
+compiled in too, for the preview.
+
 ## Building and testing
 
 ```sh
 make tt7d            # build/tt7d: static ARM EABI5 for the panel
-make test-host       # unit tests (render, json, http, util, sysinfo, control, hardware, assets, mqtt, ws, input) with ASan/UBSan
-make test-e2e        # the real daemon, host-built, on a file-backed fb (tt7d/test_e2e.py)
+make test-host       # unit tests (render, json, http, util, sysinfo, control, hardware, assets, mqtt, ws, input,
+                     # fallback, timesync, clockface) with ASan/UBSan; clockface also writes build/host/clockface-*.png
+make test-e2e        # the real daemon, host-built, on a file-backed fb (tt7d/test_e2e.py, test_fallback_e2e.py)
 make test-mqtt       # the real daemon against real amqtt brokers and a paho client (tt7d/test_mqtt_e2e.py)
 make test-input      # input_event records through FIFOs; events out over the WebSocket and MQTT (tt7d/test_input_e2e.py)
 make check           # everything, including the boot image checks
@@ -521,10 +621,13 @@ classes on `/integrations/binary_sensor/` and `/integrations/button/`.
 
 ## On the panel
 
-`probe/tt7-app.sh` (the image's `/usr/bin/tt7-app`) runs discovery once per
-boot, starts `tt7probe log` for raw input logging (evdev allows several readers,
+`probe/tt7-app.sh` (the image's `/usr/bin/tt7-app`) starts, all in the
+background: ntpd (once a default route exists), Wi-Fi, discovery (once per
+boot), and `tt7probe log` for raw input logging (evdev allows several readers,
 so it runs beside tt7d's own input handling and keeps the raw records to
-compare tt7d's events against), starts Wi-Fi, and then runs `tt7d --data-dir /data/tt7/tt7d` in a loop. If tt7d exits,
+compare tt7d's events against). Then it runs `tt7d --data-dir /data/tt7/tt7d`
+in a loop, so the fallback clock is up within seconds of boot instead of after
+discovery (SPEC §38). If tt7d exits,
 it restarts after 2 s without re-running the steps before it. `/data/tt7/bin`
 comes first on its PATH, so a binary copied there replaces the image's copy.
 
@@ -567,10 +670,16 @@ a row. So:
 ```sh
 ssh $S $P mkdir -p /data/tt7/bin
 scp -O $S build/tt7d build/tt7probe $P:/data/tt7/bin/      # the new tt7probe has `log`
+scp -O $S probe/tt7-ntp-hook.sh $P:/data/tt7/bin/tt7-ntp-hook   # images before the fallback clock lack it
 scp -O $S probe/tt7-app.sh $P:/data/tt7/app
-ssh $S $P 'chmod 755 /data/tt7/app /data/tt7/bin/tt7d /data/tt7/bin/tt7probe && sync'
+ssh $S $P 'chmod 755 /data/tt7/app /data/tt7/bin/tt7d /data/tt7/bin/tt7probe /data/tt7/bin/tt7-ntp-hook && sync'
+ssh $S $P 'busybox ntpd --help 2>&1 | head -1'           # the image's BusyBox must have ntpd
 ssh $S $P 'nohup reboot -f > /dev/null 2>&1 &'           # detached: see gotchas.md
 ```
+
+The new tt7-app only takes effect after a reboot (init reads `/data/tt7/app`
+at boot); replacing only `tt7d` needs no reboot (see above), but then nothing
+starts ntpd and the clock stays on "Setting clock…".
 
 To undo it: `ssh $S $P 'rm /data/tt7/app && sync'` and reboot. This reboots the
 panel, so like a flash it needs Doctor Biz's go-ahead.
@@ -625,9 +734,19 @@ curl -s http://<panel-ip>/api/v1/state | python3 -m json.tool | grep -A10 '"mqtt
   the working ssh `nohup reboot -f &`, but not yet run from tt7d).
 - `klogctl` on the panel: tt7d runs as root there, so it should work; on
   the host it is usually refused (`dmesg_restrict`).
-- The wall clock: the panel has an RTC (`hym8563`), but nothing sets the time,
-  so `received_at` and `time` may read 1970 or be stale. `frame_age_s` uses
-  the monotonic clock and is correct regardless.
+- The wall clock: the panel has an RTC (`hym8563`), but nothing reads or
+  writes it. ntpd now sets the system clock once the network is up; before
+  that, `received_at` and `time` may read 1970 or 2011. `frame_age_s` uses the
+  monotonic clock and is correct regardless.
+- The fallback clock on the panel: ntpd, the hook and the marker have run
+  only on the host (the hook under dash, not BusyBox ash). Whether the
+  flashed image's BusyBox has ntpd is unchecked (`busybox ntpd --help` over
+  ssh would tell); the build config has had it on. How long a redraw and the
+  preview PNG take on the Cortex-A9 is not measured. How the clock looks on
+  the glass in RGB565 (anti-aliased edges, the dark grey background) has not
+  been seen.
+- Starting ntpd only once a default route exists (a USB-only panel never gets
+  one, so it never syncs and never shows a time: by design, but untested).
 - MQTT has only met amqtt 0.12.1 (tests) so far, not the owner's broker at
   192.168.23.123, not mosquitto, and not the panel's network stack.
 - The Home Assistant discovery payloads follow the documentation cited above

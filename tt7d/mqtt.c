@@ -129,12 +129,6 @@ static void pub_leaf(struct mqtt_app *m, const char *leaf, const char *payload, 
     if (snprintf(topic, sizeof topic, "%s/%s", m->base, leaf) < (int)sizeof topic) pub(m, topic, payload, retain);
 }
 
-static double since_mono(const struct timespec *t) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (double)(now.tv_sec - t->tv_sec) + (double)(now.tv_nsec - t->tv_nsec) / 1e9;
-}
-
 static const char *tri(int v) { return v < 0 ? "null" : v ? "true" : "false"; }
 
 static void json_int_or_null(struct sbuf *sb, const char *key, int v) {
@@ -159,16 +153,28 @@ static void build_state(struct mqtt_app *m, const struct sysinfo_values *v, stru
     sb_json_str(sig, v->wifi_ip[0] ? v->wifi_ip : NULL);
     sb_puts(sig, ",\"ethernet_ip\":");
     sb_json_str(sig, v->ethernet_ip[0] ? v->ethernet_ip : NULL);
+    const char *id; /* what the screen shows: a frame, or the fallback clock */
+    double age;
+    fallback_screen_current(m->screen, fs, &id, &age);
     sb_puts(sig, ",\"frame_id\":");
-    sb_json_str(sig, fs->have && fs->id[0] ? fs->id : NULL);
+    sb_json_str(sig, id);
 
     /* The document: the clocks, the same members, then frame age. */
     sb_puts(doc, "{\"time\":");
     sb_json_time(doc, &now);
     sb_printf(doc, ",\"uptime_s\":%lld", (long long)boot.tv_sec);
     if (sig->buf) sb_puts(doc, sig->buf + 1);
-    if (fs->have) sb_printf(doc, ",\"frame_age_s\":%.1f", since_mono(&fs->received_mono));
+    if (age >= 0) sb_printf(doc, ",\"frame_age_s\":%.1f", age);
     else sb_puts(doc, ",\"frame_age_s\":null");
+    if (m->screen) { /* the fallback clock: in the document with its start time, in sig without */
+        struct timespec mono;
+        clock_gettime(CLOCK_MONOTONIC, &mono);
+        int64_t now_ms = (int64_t)mono.tv_sec * 1000 + mono.tv_nsec / 1000000;
+        sb_puts(doc, ",");
+        fallback_json(&m->screen->state, now_ms, &now, 1, doc);
+        sb_puts(sig, ",");
+        fallback_json(&m->screen->state, now_ms, &now, 0, sig);
+    }
     sb_puts(doc, ",\"last_touch\":null}");
     sb_puts(sig, "}");
 }
@@ -188,8 +194,11 @@ static void publish_sensors(struct mqtt_app *m, const struct sysinfo_values *v) 
         snprintf(num, sizeof num, "%d", v->brightness_percent);
         pub_leaf(m, "sensor/brightness", num, 1);
     }
-    if (m->frames->have) {
-        snprintf(num, sizeof num, "%.1f", since_mono(&m->frames->received_mono));
+    const char *id;
+    double age;
+    fallback_screen_current(m->screen, m->frames, &id, &age);
+    if (age >= 0) {
+        snprintf(num, sizeof num, "%.1f", age);
         pub_leaf(m, "sensor/frame_age_s", num, 1);
     }
     if (v->wifi_ip[0]) pub_leaf(m, "sensor/wifi_ip", v->wifi_ip, 1);

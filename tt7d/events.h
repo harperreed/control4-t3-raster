@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "display.h"
+#include "fallback_screen.h"
 #include "frame.h"
 #include "http.h"
 #include "input.h"
@@ -25,6 +26,7 @@ struct events {
     struct ws_hub hub;
     const struct display *disp;
     const struct frame_store *frames;
+    const struct fallback_screen *screen; /* NULL = no fallback clock */
     struct mqtt_app *mqtt;
     const char *token;
     const char *device_id;
@@ -34,10 +36,13 @@ struct events {
 };
 
 /* Open the input devices (input_dir holds the eventN nodes; sysfs_root
- * names them) and get ready for WebSocket clients. Never fails: missing
- * devices are looked for again every few seconds. */
+ * names them) and get ready for WebSocket clients. Events carry the frame_id
+ * of what is on screen: `screen`'s clock face when it shows, else the frame
+ * store's frame. Never fails: missing devices are looked for again every
+ * few seconds. */
 void events_init(struct events *e, const char *input_dir, const char *sysfs_root, const struct display *disp,
-                 const struct frame_store *frames, struct mqtt_app *mqtt, const char *token, const char *device_id);
+                 const struct frame_store *frames, const struct fallback_screen *screen, struct mqtt_app *mqtt,
+                 const char *token, const char *device_id);
 
 /* Head-time checks for GET /api/v1/events. Returns EVENTS_NOT_MINE for any
  * other path, 0 to go on (to events_take_over), or -1 with resp filled:

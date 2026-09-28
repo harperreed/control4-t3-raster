@@ -204,6 +204,22 @@ def touch_sequence(d, ws, rotation, frame_id):
     check_touch(messages(ws, 1, "first up")[0], "up", 0, (640, 50), rotation, frame_id)
 
 
+def test_touch_on_fallback_clock(d):
+    """Before any frame the fallback clock is on screen: touches carry its id."""
+    shown = d.get_json("/api/v1/state")["display"]["frame_id"]
+    assert shown and shown.startswith("fallback-clock-"), f"/state frame_id {shown!r}, want the fallback clock's"
+    ws, hello = d.stream()
+    assert hello["frame_id"] == shown, hello
+    d.write_touch(record(EV_ABS, ABS_MT_SLOT, 0), record(EV_ABS, ABS_MT_TRACKING_ID, 50),
+                  record(EV_ABS, ABS_MT_POSITION_X, 10), record(EV_ABS, ABS_MT_POSITION_Y, 10), syn(),
+                  record(EV_ABS, ABS_MT_TRACKING_ID, -1), syn())
+    down, up = messages(ws, 2, "touch on the fallback clock")
+    assert down["frame_id"] == up["frame_id"] == shown, (down, up)
+    ws.close()
+    last_touch = d.get_json("/api/v1/state")["input"]["last_touch"]
+    assert ISO.fullmatch(last_touch or ""), last_touch
+
+
 def test_touch(d, rotation, events_tool):
     frame_id = f"touch-frame-{rotation}"
     put_frame(d, frame_id)
@@ -340,12 +356,16 @@ def main():
         try:
             broker.start()
             obs = Observer(broker)
-            d.extra_args = ["--mqtt-host", "127.0.0.1", "--mqtt-port", str(broker.port)]
+            # Never the host's NTP marker: the fallback clock shows "Setting clock" either way.
+            ntp_marker = ["--ntp-marker", os.path.join(workdir, "ntp-synced")]
+            d.extra_args = ["--mqtt-host", "127.0.0.1", "--mqtt-port", str(broker.port)] + ntp_marker
             d.start()
             base = f"tt7/{d.get_json('/api/v1/info')['device_id']}"
             wait_for("MQTT connected", lambda: d.get_json("/api/v1/state")["mqtt"]["connected"])
             steps.append("/info lists the touch range and buttons; /state input; the log names the devices")
             test_info_and_state(d)
+            steps.append("touches on the fallback clock carry its frame_id")
+            test_touch_on_fallback_clock(d)
             steps.append("WebSocket auth: 401 without or with a wrong token, ?token= works, 426, 405")
             test_auth(d)
             steps.append("rotation 90: down/move/up order, logical coords, throttle, frame_id (+ tools/events.py)")
@@ -357,7 +377,7 @@ def main():
             steps.append("a slow client is dropped while frame PUTs and a reading client carry on")
             test_slow_client(d)
             d.stop()
-            d.extra_args = ["--rotation", "270"]
+            d.extra_args = ["--rotation", "270"] + ntp_marker
             d.start()
             steps.append("rotation 270: the same touches map to the other logical corners")
             test_touch(d, 270, None)
