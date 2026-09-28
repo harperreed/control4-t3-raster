@@ -26,12 +26,25 @@ CROSS_CC     := arm-linux-musleabihf-cc
 CROSS_CFLAGS := -std=c11 -D_GNU_SOURCE -static -Os -Wall -Wextra -Werror
 HOST_CFLAGS  := -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined
 
-.PHONY: all image busybox dropbear wifi test-host check clean
+# tt7d: the network display daemon. Modules shared by the daemon and its unit tests.
+TT7D_LIB     := tt7d/json.c tt7d/http.c tt7d/render.c tt7d/sha256.c tt7d/ident.c tt7d/sysinfo.c probe/fbdraw.c
+TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/server.c tt7d/main.c
+TT7D_HDRS    := $(wildcard tt7d/*.h) probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h third_party/lodepng/lodepng.h
+TT7D_INC     := -Itt7d -Iprobe -I$(FONT_DIR) -Ithird_party/lodepng
+LODEPNG      := third_party/lodepng/lodepng.cpp
+LODEPNG_DEFS := -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP \
+                -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS
+TT7D_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
+TT7D_UNITS   := render json http util sysinfo
+
+.PHONY: all image busybox dropbear wifi tt7d test-host test-e2e check clean FORCE
 .DELETE_ON_ERROR:
 
 all: image
 image: $(IMAGE)
 busybox: $(B)/busybox/busybox
+# Also usable alone: copy build/tt7d to /data/tt7/bin on a running panel (tt7d/README.md).
+tt7d: $(B)/tt7d
 dropbear: $(B)/dropbear/dropbearmulti
 # Also usable alone: copy build/wifi/* to /data/tt7/bin on a running panel.
 wifi: $(B)/wifi/wpa_supplicant
@@ -49,6 +62,19 @@ $(B)/init: third_party/mmkeypad/init/init.c init/usb_stall.c init/usb_stall.h
 	@mkdir -p $(B)
 	$(CROSS_CC) -static -Os -Wall -Werror -Iinit -o $@ third_party/mmkeypad/init/init.c init/usb_stall.c
 
+# Rewritten only when `git describe` changes, so both tt7d builds relink with
+# the build string that /api/v1/info reports.
+$(B)/tt7d.version: FORCE
+	@mkdir -p $(B)
+	@echo '$(TT7D_VERSION)' | cmp -s - $@ || echo '$(TT7D_VERSION)' > $@
+FORCE:
+
+# The display daemon for the panel. lodepng is compiled as C (third_party/lodepng/PROVENANCE).
+$(B)/tt7d: $(TT7D_SRCS) $(TT7D_HDRS) $(LODEPNG) $(B)/tt7d.version
+	@mkdir -p $(B)
+	$(CROSS_CC) $(CROSS_CFLAGS) $(TT7D_INC) $(LODEPNG_DEFS) -DTT7D_VERSION='"$(TT7D_VERSION)"' -o $@ \
+		$(TT7D_SRCS) -x c $(LODEPNG) -x none
+
 $(B)/tt7probe: probe/tt7probe.c probe/fbdraw.c probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h
 	@mkdir -p $(B)
 	$(CROSS_CC) $(CROSS_CFLAGS) -Iprobe -I$(FONT_DIR) -o $@ probe/tt7probe.c probe/fbdraw.c
@@ -61,7 +87,7 @@ $(B)/stock/kernel.img: $(STOCK_BOOT) scripts/bootimg.py $(MKBOOTIMG)
 	python3 $(MKBOOTIMG) unpack $(STOCK_BOOT) $(B)/stock
 	cd $(B)/stock/ramdisk && gzip -dc ../ramdisk.cpio.gz | cpio -id --quiet 'rk30xxnand_ko.ko.3.0.36+'
 
-ROOTFS_INPUTS := $(B)/init $(B)/tt7probe $(B)/busybox/busybox $(B)/dropbear/dropbearmulti \
+ROOTFS_INPUTS := $(B)/init $(B)/tt7probe $(B)/tt7d $(B)/busybox/busybox $(B)/dropbear/dropbearmulti \
                  $(B)/wifi/wpa_supplicant $(B)/stock/kernel.img \
                  probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh \
                  scripts/stage-rootfs.sh $(SSH_PUBKEY) $(shell find third_party/mmkeypad/rootfs -type f)
@@ -85,18 +111,38 @@ $(B)/host/test_usb_stall: init/test_usb_stall.c init/usb_stall.c init/usb_stall.
 	@mkdir -p $(B)/host
 	gcc $(HOST_CFLAGS) -Iinit -o $@ init/test_usb_stall.c init/usb_stall.c
 
-test-host: $(B)/host/test_fbdraw $(B)/host/test_usb_stall
+$(B)/host/test_%: tt7d/test_%.c tt7d/test_common.h $(TT7D_LIB) $(TT7D_HDRS)
+	@mkdir -p $(B)/host
+	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(TT7D_INC) -DFIXTURE='"tt7d/test/fixtures/sysfs-tt7"' -o $@ $< $(TT7D_LIB)
+
+# Host build of the real daemon for the end-to-end test. lodepng is compiled
+# as C (see third_party/lodepng/PROVENANCE).
+$(B)/host/lodepng.o: $(LODEPNG) third_party/lodepng/lodepng.h
+	@mkdir -p $(B)/host
+	gcc $(HOST_CFLAGS) $(LODEPNG_DEFS) -x c -c -o $@ $<
+
+$(B)/host/tt7d: $(TT7D_SRCS) $(TT7D_HDRS) $(B)/host/lodepng.o $(B)/tt7d.version
+	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(TT7D_INC) $(LODEPNG_DEFS) -DTT7D_VERSION='"$(TT7D_VERSION)"' \
+		-o $@ $(TT7D_SRCS) $(B)/host/lodepng.o
+
+test-host: $(B)/host/test_fbdraw $(B)/host/test_usb_stall $(TT7D_UNITS:%=$(B)/host/test_%)
 	$(B)/host/test_fbdraw
 	$(B)/host/test_usb_stall
+	@for t in $(TT7D_UNITS); do $(B)/host/test_$$t || exit 1; done
+
+# Runs the real host-built daemon on a file-backed framebuffer (tt7d/test_e2e.py).
+test-e2e: $(B)/host/tt7d
+	python3 tt7d/test_e2e.py --daemon $(B)/host/tt7d
 
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
                  scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \
-                 scripts/build-wpa.sh scripts/wifi-setup.sh scripts/test-wifi-setup.sh
+                 scripts/build-wpa.sh scripts/wifi-setup.sh scripts/test-wifi-setup.sh \
+                 tools/push-frame.sh
 DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh
 # A system shellcheck if there is one, else the pinned PyPI build through uv.
 SHELLCHECK := $(shell command -v shellcheck 2>/dev/null || echo "uvx --from shellcheck-py==0.11.0.1 shellcheck")
 
-check: test-host $(IMAGE)
+check: test-host test-e2e $(IMAGE)
 	python3 scripts/check-image.py --image $(IMAGE) --stock $(STOCK_BOOT) --pubkey $(SSH_PUBKEY)
 	@for s in $(SHELL_SCRIPTS); do bash -n $$s || exit 1; done; echo "  ok   bash -n: $(SHELL_SCRIPTS)"
 	@for s in $(DEVICE_SCRIPTS); do sh -n $$s || exit 1; done; echo "  ok   sh -n: $(DEVICE_SCRIPTS)"
