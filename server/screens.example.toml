@@ -1,0 +1,32 @@
+# screens.toml for tt7-server: one [[screen]] per tt7 panel. Run with
+#   build/server/tt7-server -config screens.toml
+# Unknown keys are errors. Relative paths are relative to this file; ~/ is your home.
+
+# Admin page and JSON API. Loopback needs no token; any other address
+# requires admin_token_file (mode 600, first line is the token).
+listen = "127.0.0.1:7788"
+# admin_token_file = "~/.config/tt7/admin-token"
+
+# The Chrome to run headless. Left out, tt7-server looks for one on PATH.
+# On Doctor Biz's box the only Chrome is agent-browser's, and Ubuntu's AppArmor
+# userns rule means it needs --no-sandbox (gotchas.md).
+chrome_path = "~/.agent-browser/browsers/chrome-154.0.8037.57/chrome"
+chrome_flags = ["--no-sandbox"]
+
+# At most this many frames per second go to each panel (1..30). A page that
+# animates is sampled; a page that sits still sends nothing.
+max_fps = 5
+
+[[screen]]
+name = "tabletop"                   # letters, digits, - and _; used in /api/screens/<name>
+host = "192.168.23.197"             # IP or hostname, optional :port (default 80)
+token_file = "~/.config/tt7/token"  # the panel's /data/tt7/tt7d/token; must be mode 600
+url = "https://example.com/"        # any http(s):// or file:// URL; PUT /api/screens/tabletop/url rewrites this line
+# enabled = true                    # false: keep the entry, drive nothing
+# heartbeat_s = 60                  # POST /api/v1/heartbeat this often (keep it under tt7d's --fallback-timeout, 300)
+
+[[screen]]
+name = "wall"
+host = "192.168.23.198"
+token_file = "~/.config/tt7/token-tt7-942093"
+url = "https://example.com/"

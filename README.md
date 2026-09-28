@@ -33,6 +33,7 @@ The T3's boot partition holds an ordinary Android boot image, and its only integ
 - `init` (adapted from MMKeypad) mounts stock `/system` read-only for the vendor drivers, brings up the network, SSH and USB, and supervises the app.
 - `tt7d` is a single static C daemon (musl, cross-built with `zig cc`) for HTTP, frames, the control panel and MQTT. The kernel is 3.0.36, older than Go and Rust support, hence C.
 - App updates go to `/data/tt7/`, and `init` rolls back an app that keeps crashing.
+- `tt7-server` ([server/README.md](server/README.md)) runs on your machine, not the panel: one headless Chrome shows a URL per panel, pushes what it paints as frames, and turns touches into clicks. Host-tested only so far.
 
 ## Quick start
 
