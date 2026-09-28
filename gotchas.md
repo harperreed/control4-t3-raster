@@ -117,3 +117,4 @@
 - **Touch verified on the glass (2026-09-28), rotation 270:** a top-left tap came in at (45,14), the top edge at y≈6, bottom-right touches at around (1091–1168, 630–702). Multitouch protocol B works: several fingers down at once, each with its own down and up. Touch events carried the on-screen `fallback-clock-*` frame_id.
 - **Buttons (rk29-keypad):** power = 116, volume_up = 115 (volume_down presumably 114, not yet pressed). `key_143` (KEY_WAKEUP) fires alongside touches and isn't a physical button, so treat it as noise.
 - **Fallback clock seen live:** it took over about 5 min after the restored frame, once NTP had synced (marker /run/tt7/ntp-synced).
+- **MQTT live (2026-09-28):** anonymous to 192.168.23.123:1883 via `tools/mqtt-setup.sh`. The broker holds 17 retained topics: availability, state, 6 sensors, 9 HA discovery configs.

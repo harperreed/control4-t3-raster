@@ -1,7 +1,7 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: main has M1-M6 + M3 input/WebSocket + fallback clock/NTP (make check green). Panel still runs M4-only tt7d 6bc0922. Deploy = overlays only (flashed image already has ntpd): probe/tt7-app.sh→/data/tt7/app, build/tt7d, build/tt7probe, probe/tt7-ntp-hook.sh→/data/tt7/bin/tt7-ntp-hook, then reboot. Needs go-ahead
+- Step: panel runs main's tt7d (rotation 270, touch/WS, fallback clock, NTP, MQTT live on 192.168.23.123). Now: camera integration (branch tt7d-camera) and web firmware update (branch tt7d-web-update), parallel worktrees
 - Next: when docked on its power adapter: resume `scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27 system`, then cache/userdata/user; verify the watchdog fixes a real stall (usb-watchdog.log). Then docs/hardware-inventory.md + recovery doc (closes M0), then tt7d M1/M2
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
@@ -13,6 +13,7 @@
 - Approved: "for mqtt i think we shodl report touch events. so we can make a touch display." (2026-09-27), then superseded: "let's skip touch over mqtt if we have a websocket server" (2026-09-27). M3 = touch over WebSocket /api/v1/events only; button events may still go to MQTT
 - Approved: "also if it can't find the server it is expecting it shoudl show a nice date, clock on the screen. that is the failure mode." (2026-09-27): fallback clock screen when frame age > timeout (default 5 min, configurable, 0 = off) or before the first frame; POST /api/v1/heartbeat; NTP + configurable timezone; never show a clock before NTP sync. Amends SPEC §41
 - Approved: push per Doctor Biz: "git remote add origin https://github.com/harperreed/control4-t3-raster.git / git branch -M main / git push -u origin main" (2026-09-27); license MIT ("ok. MIT")
+- Approved: "the mqtt doesnt' take a login. let's do the rest" (2026-09-28): configure anonymous MQTT to 192.168.23.123:1883; build camera (snapshot + presence) and web firmware update
 - Open: default rotation 90 is a guess, so confirm with tools/make-test-frame.py photo
 - Open (older): Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
