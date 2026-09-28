@@ -125,6 +125,12 @@ Only `init/init.c` changed. Every other file here is byte-identical to upstream
      unknown, and rx still arriving already shows the host has the device
      configured.
 
+10. **No ntpd from init (2026-09-28).** Upstream's network bring-up spawned
+    `busybox ntpd -n -p pool.ntp.org`. tt7-app already runs ntpd with the
+    `tt7-ntp-hook` sync hook and the configured servers, and two ntpds
+    were seen running at once on the panel. The spawn is removed; check-image
+    asserts that init contains no ntpd.
+
 Everything else, including network and Dropbear bring-up order, the USB
 RNDIS+ACM gadget setup (init only writes `enable` afterwards, see 9), the NAND module insmod, the
 vendor module loads, the Wi-Fi driver pick and the respawn loop, is upstream's

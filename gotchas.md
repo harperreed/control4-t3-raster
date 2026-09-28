@@ -113,3 +113,4 @@
 - BusyBox's usage text is compressed in our build (`CONFIG_FEATURE_COMPRESS_USAGE`), so grepping the binary for usage strings fails; check-image looks for `freq_drift_ppm` (from `run_script`) instead.
 - musl + no zoneinfo files: TZ must be a POSIX string (`CST6CDT,M3.2.0,M11.1.0`), never `America/Chicago`. tt7d refuses zone names.
 - The test_e2e/test_mqtt_e2e daemons: test_e2e runs with `--fallback-timeout 0` (it checks an untouched fb before the first frame); the fallback has its own `test_fallback_e2e.py`.
+- **Only one ntpd.** Upstream MMKeypad init spawned its own `ntpd -p pool.ntp.org`, and tt7-app starts ours with the sync hook, so two ran at once (seen 2026-09-28, PIDs 101 and 154). Removed from init.c (PROVENANCE change 10); check-image guards it. Images flashed before that still have it; `kill` the one whose parent is PID 1 and whose args lack `-S`.

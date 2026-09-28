@@ -627,11 +627,8 @@ static void bring_up_network(void) {
     /* USB escape hatch alongside wired net (independent of eth/wifi success). */
     usb_gadget_rndis();
 
-    // Sync the clock from NTP. This glass has no RTC battery, so it boots at the
-    // epoch; the license trial countdown ("Trial (Pro) · N days left") and any
-    // correct timestamps depend on a real clock.
-    char *ntp[] = {"/bin/busybox", "ntpd", "-n", "-p", "pool.ntp.org", NULL};
-    spawn(ntp);
+    // NTP is not started here: tt7-app runs ntpd with the tt7-ntp-hook sync
+    // hook and the configured servers. A second ntpd would fight it for the clock.
 }
 
 /* ── WiFi driver selection (mirror the stock universal image) ────────────────
