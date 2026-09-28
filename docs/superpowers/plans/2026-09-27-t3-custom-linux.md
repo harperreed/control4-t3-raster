@@ -19,6 +19,7 @@
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
 - Approved: "a + c" (2026-09-27): dashboard + control panel content, now served by the server side of SPEC.md
 - Approved: "i figired out a much better solution" + pasted SPEC.md (2026-09-27): tt7d dumb network display supersedes the Smashing/rooted-Android kiosk
+- Approved: "go ahead and flash both" (2026-09-28): flash wall unit 000fff80e822 (Loader mode) with build/tt7-wall-000fff80e822-boot.img; update the tabletop to merged main (image + overlays)
 - Open: none
 - Compactions: 0 (new session 2026-09-28: camera/update agents were cut off before creating branches; relaunched)
 
