@@ -46,7 +46,7 @@ json_str() {
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
 panel=$1
 shift
-broker= user= password_file= prefix= ha=true user_set=false
+broker='' user='' password_file='' prefix='' ha=true user_set=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     --broker) [[ $# -ge 2 ]] || die "--broker needs a value"; broker=$2; shift ;;
