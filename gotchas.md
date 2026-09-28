@@ -181,3 +181,7 @@
 - The golden container `tt7d/test/fixtures/regions-v1.bin` is written by Go (`go test ./internal/regions -run TestGoldenVector -update`) and checked by Go, C and the Python e2e. Its PNG bytes come from Go's encoder; the tests compare framing and decoded pixels, so a Go upgrade does not break them.
 - The wall unit's image (build/tt7-wall-000fff80e822-boot.img, built 11:32 on 2026-09-28) has tt7d 4c1fc61-dirty with `PUT /api/v1/system/update` and the release-selecting `/usr/bin/tt7-app`, so a bundle upload needs no bootstrap there, as long as no older `/data/tt7/app` overrides the image's tt7-app (checked by reading the image, not the panel).
 - `server-check` now runs the server e2e through uv with pinned Pillow 12.3.0, to decode Chrome's and tt7d's PNGs.
+- **Dirty rectangles on the real panels (2026-09-28, release ef819c9 via web update on BOTH units; the wall's first update needed no bootstrap):**
+  - Tabletop: region pushes of 1–8 KB take 94–418 ms (one 929 ms spike); full frames of about 60 KB took about 920 ms.
+  - Wall on Wi-Fi: 88 ms to 3.4 s, plus timeouts. After a failed PATCH the server resyncs with a full frame, as designed.
+  - With regions, the remaining latency is Wi-Fi jitter, not bytes: same-size pushes vary 10×. The wall should be fine once it's on PoE Ethernet.
