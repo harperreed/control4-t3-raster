@@ -11,6 +11,7 @@
 - Approved: "i love 1" (2026-09-27): web firmware update for the tt7d bundle (M8-lite) via init's overlay rollback; boot-image-over-web deferred
 - Approved: "3. we should do a, and b" (2026-09-27): camera snapshot (JPEG, HA camera) + presence detection to wake the display; camera off by default
 - Approved: "for mqtt i think we shodl report touch events. so we can make a touch display." (2026-09-27), then superseded: "let's skip touch over mqtt if we have a websocket server" (2026-09-27). M3 = touch over WebSocket /api/v1/events only; button events may still go to MQTT
+- Approved: "also if it can't find the server it is expecting it shoudl show a nice date, clock on the screen. that is the failure mode." (2026-09-27): fallback clock screen when frame age > timeout (default 5 min, configurable, 0 = off) or before the first frame; POST /api/v1/heartbeat; NTP + configurable timezone; never show a clock before NTP sync. Amends SPEC §41
 - Open: default rotation 90 is a guess, so confirm with tools/make-test-frame.py photo
 - Open (older): Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
@@ -52,6 +53,7 @@ Architecture per those files: `boot.img` = stock kernel + our gzipped cpio ramdi
 - Dev loop: `sim/` headless renderer on the PC → scp the binary to `/data` → restart the app.
 
 ## Log
+- 2026-09-27 queue after MQTT merge: (1) M3 touch/buttons WebSocket, (2) fallback clock + NTP, (3) web update of tt7d bundle. Camera spike running in parallel (cam-spike worktree).
 - 2026-09-27: M4 panel on device: /, /hardware, /logs (kernel log via klogctl works), auth 401 without token. Rollback: /data/tt7/bin/tt7d.bak.
 - 2026-09-27: tt7d M1+M2 built: PUT/GET frame (PNG, lodepng), info/state, token auth, dedup, persist, rotation flag. Host e2e green. docs/hardware-inventory.md written.
 - 2026-09-27: Watchdog+Wi-Fi image (5812654f…) flashed over Wi-Fi and booted; auto-joins Wi-Fi. `reboot -f` takes ~5 min.

@@ -1417,7 +1417,8 @@ The TT7 remains unaware of what the interaction means.
 
 If the renderer disappears:
 
-- retain the last valid frame
+- retain the last valid frame until the fallback timeout expires
+- then show the fallback clock screen (§41.1)
 - continue serving control panel/API
 - continue publishing local telemetry when MQTT remains available
 - do not blank the display unless configured
@@ -1429,6 +1430,23 @@ last_frame_age
 ```
 
 so stale content can be detected.
+
+## 41.1 Fallback clock screen
+
+(Added 2026-09-27, Doctor Biz: "if it can't find the server it is expecting it should show a nice date, clock on the screen. that is the failure mode.")
+
+The device has no server address; it only receives frames. "Server missing" therefore means:
+
+- no frame has been accepted since boot, or
+- the newest accepted frame **or heartbeat** is older than `fallback_timeout` (default 300 s, configurable, 0 disables)
+
+When the condition holds, `tt7d` renders a fallback screen itself: a large clock, the date, and a small status line (for example `waiting for server · <ip>`). The first accepted frame replaces it immediately.
+
+Servers that update rarely keep the display with `POST /api/v1/heartbeat`. Re-sending the current frame also counts, and deduplication keeps that cheap.
+
+The clock MUST NOT show a time until the system clock is synchronized (NTP). Until then the fallback shows the status line and a "setting clock" notice. Timezone is configurable.
+
+The fallback screen is the one deliberate exception to §2.1: a failure-mode display, not application UI.
 
 ---
 
