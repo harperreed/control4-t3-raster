@@ -77,3 +77,10 @@
 - curl sends `Expect: 100-continue` for bodies over about 1 MB and waits up to 1 s if the server ignores it. tt7d answers it, after checking the token and size.
 - tt7d logs only failed requests. Its log is `/data/tt7/app.log` on flash, and a per-frame log line would turn every pushed frame into a flash write.
 - tt7d's default `--rotation 90` (logical top-left → fb top-right) is a guess until someone photographs `tools/make-test-frame.py` output on the dock.
+
+## tt7d MQTT (2026-09-27, branch tt7d-m5-mqtt; host-tested against amqtt only)
+- A broker replays retained messages to every new subscription with the retain flag set, but forwards live messages with it cleared (MQTT 3.1.1 §3.3.1.3). tt7d ignores `cmd/*` that arrive retained. Otherwise a retained `cmd/reboot` would reboot the panel on every reconnect.
+- amqtt 0.12.1 drops messages still queued in its delivery loop when a DISCONNECT (or EOF) arrives, so "publish offline, then DISCONNECT" loses the publish (broker.py `_client_message_loop`). tt7d waits, at most 2 s, for its own `offline` to come back before it sends DISCONNECT. Mosquitto has not been tried.
+- tt7d's MQTT `host` must be an IPv4 address: getaddrinfo() blocks, and the daemon has one poll() loop shared with the display.
+- The integration test uses amqtt as the broker and paho-mqtt as the client. Both are pinned in the Makefile and run with `uv run --no-project --with ...`. mosquitto is not installed, and installing it needs sudo.
+- Touch events stay off MQTT (owner decision, 2026-09-27): M3 sends them over a WebSocket. Only `event/button` has an MQTT hook.

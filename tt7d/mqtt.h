@@ -67,7 +67,8 @@ void mqtt_app_service(struct mqtt_app *m, short revents);
 void mqtt_app_frame_accepted(struct mqtt_app *m);
 
 /* Publish tt7/<id>/event/<type> (not retained) with a JSON object payload.
- * For input events (M3): mqtt_app_event(m, "touch", "{...}"). Dropped when
+ * For physical button events (M3): mqtt_app_event(m, "button", "{...}").
+ * Touch events do not go over MQTT (the owner chose a WebSocket). Dropped when
  * not connected. */
 void mqtt_app_event(struct mqtt_app *m, const char *type, const char *json);
 
