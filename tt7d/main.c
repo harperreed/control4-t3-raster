@@ -142,7 +142,7 @@ static int parse_args(int argc, char **argv, struct config *c) {
             usage(stdout);
             exit(0);
         }
-        if (!strcmp(a, "--update-refuse-downgrade")) { /* the only flag without a value */
+        if (!strcmp(a, "--update-refuse-downgrade")) { /* a switch: it takes no value */
             c->update_refuse_downgrade = 1;
             continue;
         }
