@@ -31,6 +31,10 @@ static void expect_in(const struct sbuf *sb, const char *needle) {
     CHECK(sb->buf && strstr(sb->buf, needle) != NULL, "missing %s in %s", needle, sb->buf ? sb->buf : "(nil)");
 }
 
+static void expect_out(const struct sbuf *sb, const char *needle) {
+    CHECK(sb->buf && strstr(sb->buf, needle) == NULL, "unexpected %s in %s", needle, sb->buf ? sb->buf : "(nil)");
+}
+
 static void test_capabilities(void) {
     struct sbuf sb;
     sb_init(&sb);
@@ -46,7 +50,7 @@ static void test_capabilities(void) {
     expect_in(&sb, "\"usb_network\":{\"available\":true,\"interface\":\"rndis0\"}");
     expect_in(&sb, "\"audio_output\":{\"available\":true,\"devices\":[\"pcmC0D0p\",\"pcmC0D1p\"]}");
     expect_in(&sb, "\"audio_input\":{\"available\":true,\"devices\":[\"pcmC0D0c\",\"pcmC0D1c\"]}");
-    expect_in(&sb, "\"camera\":{\"available\":null,\"video4linux_devices\":[\"video0\"]}");
+    expect_out(&sb, "\"camera\""); /* camera.c reports it */
     sb_free(&sb);
 
     /* A root with nothing in it: everything unavailable, nothing invented. */
@@ -57,7 +61,7 @@ static void test_capabilities(void) {
     expect_in(&sb, "\"backlight\":{\"available\":false,\"device\":null,\"max_brightness\":null}");
     expect_in(&sb, "\"battery\":{\"available\":false,\"device\":null}");
     expect_in(&sb, "\"wifi\":{\"available\":false,\"interface\":null}");
-    expect_in(&sb, "\"camera\":{\"available\":false,\"video4linux_devices\":[]}");
+    expect_out(&sb, "\"camera\"");
     sb_free(&sb);
 }
 

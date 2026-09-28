@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include "camera.h"
 #include "display.h"
 #include "events.h"
 #include "fallback_screen.h"
@@ -50,6 +51,10 @@ struct config {
     int clock_hour12;
     const char *tz; /* NULL: <data-dir>/tz, else the default */
     const char *ntp_marker;
+    /* The camera (camera.h): off unless camera.conf or --camera turns it on. */
+    int camera_flag; /* --camera on|off: 1 or 0; -1 when not given */
+    const char *camera_dev;
+    const char *camera_fake_source; /* TEST ONLY */
 };
 
 struct app {
@@ -60,6 +65,8 @@ struct app {
     struct mqtt_app mqtt;
     struct events events;
     struct fallback_screen fallback;
+    struct camera camera;
+    int n_event_fds; /* poll entries events_prepare filled, before the camera's */
     char token[256];
     char device_id[32]; /* "" if device.json is unusable: reported as null */
     struct timespec started;
@@ -96,6 +103,10 @@ static void usage(FILE *out) {
             "                            else " TIMESYNC_DEFAULT_TZ ", America/Chicago)\n"
             "  --ntp-marker PATH         the file tt7-ntp-hook writes once NTP set the clock; no time is shown\n"
             "                            before it exists (default " TIMESYNC_DEFAULT_MARKER ")\n"
+            "  --camera on|off           turn the camera on or off, over <data-dir>/camera.conf (default: off)\n"
+            "  --camera-dev PATH         the camera's V4L2 node (default /dev/video0)\n"
+            "  --camera-fake-source PATH TEST ONLY: read 1280x720 NV12 frames from this file or FIFO instead\n"
+            "                            of the camera (tt7d/README.md, Camera)\n"
             "  --version, --help\n");
 }
 
@@ -112,7 +123,8 @@ static int parse_args(int argc, char **argv, struct config *c) {
     *c = (struct config){.listen = "0.0.0.0:80", .fb = "/dev/fb0", .rotation = 270, .data_dir = "/data/tt7/tt7d",
                          .sysfs_root = "/sys", .proc_root = "/proc", .log_file = "/data/tt7/app.log",
                          .reboot_cmd = "reboot -f", .input_dir = "/dev/input", .max_frame_bytes = 8u << 20,
-                         .timeout_ms = 30000, .fallback_timeout_s = 300, .ntp_marker = TIMESYNC_DEFAULT_MARKER};
+                         .timeout_ms = 30000, .fallback_timeout_s = 300, .ntp_marker = TIMESYNC_DEFAULT_MARKER,
+                         .camera_flag = -1, .camera_dev = "/dev/video0"};
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) {
@@ -144,6 +156,9 @@ static int parse_args(int argc, char **argv, struct config *c) {
         else if (!strcmp(a, "--clock-format") && (!strcmp(v, "24") || !strcmp(v, "12"))) c->clock_hour12 = v[0] == '1';
         else if (!strcmp(a, "--tz") && timesync_tz_valid(v)) c->tz = v;
         else if (!strcmp(a, "--ntp-marker") && *v) c->ntp_marker = v;
+        else if (!strcmp(a, "--camera") && (!strcmp(v, "on") || !strcmp(v, "off"))) c->camera_flag = !strcmp(v, "on");
+        else if (!strcmp(a, "--camera-dev") && *v) c->camera_dev = v;
+        else if (!strcmp(a, "--camera-fake-source") && *v) c->camera_fake_source = v;
         else if (!strcmp(a, "--fb-stride") && parse_uint(v, 1u << 20, &n) == 0) c->fb_stride = (unsigned)n;
         else if (!strcmp(a, "--rotation") && parse_uint(v, 270, &n) == 0 && render_rotation_valid((int)n))
             c->rotation = (int)n;
@@ -201,10 +216,13 @@ static void info_json(struct app *a, struct sbuf *sb) {
     sysinfo_capabilities(sb, a->cfg.sysfs_root);
     sb_puts(sb, ",");
     events_info_member(&a->events, sb);
+    sb_puts(sb, ",");
+    camera_info_member(&a->camera, sb);
     sb_puts(sb, "},\"auth\":{\"scheme\":\"bearer\",\"required_for\":[\"PUT /api/v1/frame\",\"GET /api/v1/logs\","
                 "\"PUT /api/v1/display/brightness\",\"POST /api/v1/display/blank\",\"POST /api/v1/display/wake\","
                 "\"POST /api/v1/display/test-pattern\",\"POST /api/v1/system/reboot\",\"GET /api/v1/config/mqtt\","
-                "\"PUT /api/v1/config/mqtt\",\"GET /api/v1/events\",\"POST /api/v1/heartbeat\"]}}");
+                "\"PUT /api/v1/config/mqtt\",\"GET /api/v1/events\",\"POST /api/v1/heartbeat\","
+                "\"GET /api/v1/camera/snapshot\",\"GET /api/v1/config/camera\",\"PUT /api/v1/config/camera\"]}}");
 }
 
 static double seconds_since(const struct timespec *t, clockid_t clock) {
@@ -249,6 +267,8 @@ static void state_json(struct app *a, struct sbuf *sb) {
     mqtt_app_state_member(&a->mqtt, sb);
     sb_puts(sb, ",");
     events_state_member(&a->events, sb);
+    sb_puts(sb, ",");
+    camera_state_member(&a->camera, sb);
     sb_puts(sb, "}");
 }
 
@@ -296,6 +316,8 @@ static int app_check_head(void *ctx, const struct http_request *req, struct resp
     if (rc != PANEL_NOT_MINE) return rc;
     rc = fallback_screen_check_head(a->token, req, resp);
     if (rc != FALLBACK_NOT_MINE) return rc;
+    rc = camera_check_head(&a->camera, req, resp);
+    if (rc != CAMERA_NOT_MINE) return rc;
     int i = find_route(req->path);
     if (i < 0) {
         resp_error(resp, 404, "not_found", "no such endpoint; see GET /api/v1/info");
@@ -316,6 +338,8 @@ static void app_handle(void *ctx, const struct http_request *req, const uint8_t 
     resp->status = 200;
     if (!strcmp(req->path, "/api/v1/heartbeat")) {
         fallback_screen_handle(&a->fallback, resp);
+    } else if (!strcmp(req->path, CAMERA_SNAPSHOT_PATH) || !strcmp(req->path, CAMERA_CONFIG_PATH)) {
+        camera_handle(&a->camera, req, body, len, resp);
     } else if (find_route(req->path) < 0) {
         panel_handle(&a->panel, req, body, len, resp);
     } else if (is_frame_put(req)) {
@@ -369,7 +393,8 @@ static int app_poll_prepare(void *ctx, struct pollfd *pfd, int max, int64_t *wai
     struct app *a = ctx;
     mqtt_app_prepare(&a->mqtt, &pfd[0], wait_ms);
     fallback_screen_prepare(&a->fallback, wait_ms);
-    return 1 + events_prepare(&a->events, pfd + 1, max - 1, wait_ms);
+    a->n_event_fds = events_prepare(&a->events, pfd + 1, max - 1, wait_ms);
+    return 1 + a->n_event_fds + camera_prepare(&a->camera, pfd + 1 + a->n_event_fds, max - 1 - a->n_event_fds, wait_ms);
 }
 
 /* The fallback clock before the input, so an event's frame_id names what
@@ -378,11 +403,13 @@ static void app_poll_service(void *ctx, const struct pollfd *pfd, int n) {
     struct app *a = ctx;
     mqtt_app_service(&a->mqtt, pfd[0].revents);
     fallback_screen_service(&a->fallback);
-    events_service(&a->events, pfd + 1, n - 1);
+    events_service(&a->events, pfd + 1, a->n_event_fds);
+    camera_service(&a->camera, pfd + 1 + a->n_event_fds, n - 1 - a->n_event_fds);
 }
 
 static int app_take_over(void *ctx, int fd, const struct http_request *req) {
-    return events_take_over(&((struct app *)ctx)->events, fd, req);
+    struct app *a = ctx;
+    return events_take_over(&a->events, fd, req) || camera_take_over(&a->camera, fd, req);
 }
 
 int main(int argc, char **argv) {
@@ -458,6 +485,13 @@ int main(int argc, char **argv) {
      * device never stops the display. */
     events_init(&a.events, a.cfg.input_dir, a.cfg.sysfs_root, &a.disp, &a.frames, &a.fallback, &a.mqtt, a.token,
                 a.device_id);
+
+    /* The camera last: it uses the panel (presence wake), MQTT and the event stream. */
+    struct camera_init_args ca = {.data_dir = a.cfg.data_dir, .device = a.cfg.camera_dev,
+                                  .fake_source = a.cfg.camera_fake_source, .flag_enabled = a.cfg.camera_flag,
+                                  .sysfs_root = a.cfg.sysfs_root, .token = a.token, .panel = &a.panel,
+                                  .mqtt = &a.mqtt, .events = &a.events};
+    camera_init(&a.camera, &ca);
 
     struct server_config sc = {.listen = a.cfg.listen, .max_head = 8192, .max_body = a.cfg.max_frame_bytes,
                                .timeout_ms = a.cfg.timeout_ms, .max_connections = 8};

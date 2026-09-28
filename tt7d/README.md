@@ -57,16 +57,18 @@ a vendored TrueType rasterizer.
 | `last-frame.id` | `<sha256> <frame id>` for that PNG, so a restored frame keeps its id |
 | `mqtt.conf` | MQTT settings, `KEY=VALUE` lines (see "MQTT (M5) and Home Assistant (M6)"). Written by `PUT /config/mqtt` |
 | `mqtt-password` | The broker password, first line, mode 0600. Never in `mqtt.conf`, the API, or the log |
-| `config-revision` | The `config_revision` counter (SPEC §35), bumped by every accepted `PUT /config/mqtt` |
+| `config-revision` | The `config_revision` counter (SPEC §35), bumped by every accepted `PUT /config/mqtt` and `PUT /config/camera` |
+| `camera.conf` | Camera settings, `KEY=VALUE` lines (see "Camera"). Written by `PUT /config/camera`. No picture is ever written to the data dir |
 | `mqtt-ha-device` | The device id last announced to Home Assistant, so a changed device id gets its old entities removed |
 | `tz` | Optional. First line: the fallback clock's timezone as a POSIX TZ string (see "Fallback clock"). `--tz` beats it |
 | `ntp.conf` | Optional. `server HOST` lines for ntpd; tt7-app copies it to `/etc/ntp.conf` at boot (see "Fallback clock") |
 
 ## API (`/api/v1`)
 
-Reads need no auth, except `GET /logs`, `GET /config/mqtt` and the
-`GET /events` WebSocket. `PUT /frame`, `POST /heartbeat`,
-`GET /logs`, both `/config/mqtt` methods and every control panel action need
+Reads need no auth, except `GET /logs`, `GET /config/mqtt`, the
+`GET /events` WebSocket and every camera route. `PUT /frame`, `POST /heartbeat`,
+`GET /logs`, both `/config/mqtt` methods, `GET /camera/snapshot`, both
+`/config/camera` methods and every control panel action need
 `Authorization: Bearer <token>` (`/info` lists them under `auth.required_for`).
 `GET /frame/image` is also unauthenticated in v1: it returns the frame that is
 already visible on the glass. Revisit this when the panel shows anything private.
@@ -74,10 +76,13 @@ already visible on the glass. Revisit this when the panel shows anything private
 | Endpoint | Returns |
 |---|---|
 | `GET /info` | `device_id`, `model`, `firmware_version`, `build`; `display` {`width`, `height`, `rotation`, `frame_formats`, `max_frame_bytes`, `native` {`width`, `height`, `format`, `stride`, `bits_per_pixel`}}; `capabilities` read from sysfs at request time, plus `capabilities.input` from the open input devices (see "Input (M3)"); `auth` |
-| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`} (what the screen shows: a frame, or the fallback clock), `power`, `network.interfaces`, `fallback` {`active`, `reason` (`no_frame_since_boot`, `server_timeout` or null), `timeout_s`, `since` (null when not active)}, `clock` {`synced`, `synced_at`, `timezone`, `format` (`24h`/`12h`)}, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`}; `input` {`last_touch`, `last_button` (ISO times or null), `event_clients`, `event_clients_dropped_slow`} |
+| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`} (what the screen shows: a frame, or the fallback clock), `power`, `network.interfaces`, `fallback` {`active`, `reason` (`no_frame_since_boot`, `server_timeout` or null), `timeout_s`, `since` (null when not active)}, `clock` {`synced`, `synced_at`, `timezone`, `format` (`24h`/`12h`)}, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`}; `input` {`last_touch`, `last_button` (ISO times or null), `event_clients`, `event_clients_dropped_slow`}; `camera` (see "Camera") |
 | `GET /events` | The input event stream, a WebSocket. Needs the token (see "Input (M3)") |
 | `GET /config/mqtt` | The MQTT settings in effect (see below). Needs the token |
 | `PUT /config/mqtt` | Body: a JSON object of MQTT settings. Needs the token and `Content-Type: application/json`; at most 4096 bytes |
+| `GET /camera/snapshot` | A 1280×720 JPEG (quality 80) from the camera. Needs the token. 503 when the camera is off or cannot deliver (see "Camera") |
+| `GET /config/camera` | The camera settings in effect. Needs the token |
+| `PUT /config/camera` | Body: a JSON object of camera settings. Needs the token and `Content-Type: application/json`; at most 4096 bytes |
 | `GET /frame` | Frame metadata: `frame_id`, `sha256`, `received_at`, `displayed_at`, `width`, `height`, `content_type`, `bytes`, `persisted`, `deduplicated`, `restored`. While the fallback clock shows: its metadata, `frame_id` `fallback-clock-<unix minute>`, `received_at` null. 404 `no_frame` before the first frame when the fallback is off |
 | `GET /frame/image` | The PNG exactly as received (or as restored). While the fallback clock shows: the clock as a PNG, encoded on request. 404 `no_frame` before the first frame when the fallback is off |
 | `PUT /frame` | Body: a 1280×800 PNG. Headers: `Content-Type: image/png` (required), `X-Frame-ID` (1–128 printable ASCII, no spaces; generated as `tt7d-<24 hex>` if absent), `X-Frame-SHA256` (checked if present), `X-Persist: true\|false`. Replies 200 with the frame metadata |
@@ -113,9 +118,9 @@ SHA-256 as the frame on screen, tt7d doesn't redraw. It updates `frame_id` and
 
 Capabilities are objects with `available` true/false, or `null` when the
 hardware is there but unconfirmed. `dock_detection` is `null`: nobody has
-checked whether the Mains supply means "docked". `camera` is `null` with the
-video4linux nodes listed, because the inventory ties `/dev/video0` to the
-nt99141 sensor but no frame has been captured.
+checked whether the Mains supply means "docked". `camera` comes from
+camera.c: `available` (the `--camera-dev` node exists) and `enabled` apart
+(see "Camera").
 `battery_percent` carries `"estimate": true`, since the gauge jumps between
 boots (gotchas.md).
 
@@ -128,8 +133,8 @@ Every error is JSON: `{"error": "<code>", "message": "...", ...}`.
 | 400 | `bad_request`, `invalid_frame_id`, `invalid_sha256`, `invalid_persist`, `invalid_brightness`, `invalid_lines` | |
 | 400 | `brightness_out_of_range` | `unit`, `min`, `max` |
 | 400 | `sha256_mismatch` | `header`, `computed` |
-| 400 | `invalid_config` (`PUT /config/mqtt`) | `field` (null for a syntax error) |
-| 409 | `set_by_flag`: that setting comes from a `--mqtt-*` flag | `field` |
+| 400 | `invalid_config` (`PUT /config/mqtt`, `PUT /config/camera`) | `field` (null for a syntax error) |
+| 409 | `set_by_flag`: that setting comes from a `--mqtt-*` or `--camera` flag | `field` |
 | 401 | `unauthorized` (and `WWW-Authenticate: Bearer`) | |
 | 404 | `not_found`, `no_frame` | |
 | 405 | `method_not_allowed` (and `Allow`) | |
@@ -144,6 +149,7 @@ Every error is JSON: `{"error": "<code>", "message": "...", ...}`.
 | 500 | `persist_failed` (nothing changed on screen), `write_failed` (`PUT /config/mqtt`), `internal_error`, `reboot_failed` | |
 | 500 | `backlight_write_failed` | `device`, `detail` |
 | 503 | `no_backlight`, `too_many_clients` (all 8 event stream slots taken) | |
+| 503 | `camera_disabled`, `camera_unavailable` (no device), `camera_busy` (worker restarting, or 4 requests already waiting), `camera_failed` (the worker reported an error or exited), `camera_timeout` (the worker went silent and was killed) | |
 | 505 | `http_version_not_supported` | |
 
 Every refused `PUT /frame` counts in `/state` `frames.rejected`, and its code
@@ -435,6 +441,7 @@ make test-host       # unit tests (render, json, http, util, sysinfo, control, h
 make test-e2e        # the real daemon, host-built, on a file-backed fb (tt7d/test_e2e.py, test_fallback_e2e.py)
 make test-mqtt       # the real daemon against real amqtt brokers and a paho client (tt7d/test_mqtt_e2e.py)
 make test-input      # input_event records through FIFOs; events out over the WebSocket and MQTT (tt7d/test_input_e2e.py)
+make test-camera     # the real daemon and camera worker on NV12 frames from a FIFO (tt7d/test_camera_e2e.py)
 make check           # everything, including the boot image checks
 ```
 
@@ -604,6 +611,8 @@ C4-TT7, `manufacturer` "Control4 (repurposed)", and `sw_version`. Each has
 | `number` brightness (0-100 %, slider, sends `NN%` to `cmd/brightness`) | a backlight |
 | `button` wake, blank | always (the actions are wired) |
 | `button` reboot (device class restart) | `allow_reboot_cmd=true` |
+| `camera` camera (`topic` `<base>/camera/image`, raw JPEG) | the camera is on (see "Camera") |
+| `binary_sensor` presence (device class occupancy, `state_topic` `<base>/presence`, ON/OFF) | the camera and presence are on |
 
 Every connect publishes every entity: the real config if the entity is
 available, or an empty retained payload if not, which removes it. So
@@ -619,6 +628,175 @@ payload removes, device block, availability, birth message),
 `/integrations/binary_sensor.mqtt/`, `/integrations/number.mqtt/`,
 `/integrations/button.mqtt/`, and the `battery_charging` and `restart` device
 classes on `/integrations/binary_sensor/` and `/integrations/button/`.
+The camera entities (read 2026-09-28): `/integrations/camera.mqtt/` (`topic`
+carries raw image bytes unless `image_encoding` is `b64`; Home Assistant's
+`mqtt/camera.py` subscribes with `disable_encoding=True`), and the
+`occupancy` device class on `/integrations/binary_sensor/` ("on means
+occupied (detected)").
+
+## Camera
+
+The camera is an owner-approved extension to SPEC §51 ("3. we should do a,
+and b", 2026-09-27): (a) snapshots, (b) presence that wakes the display. It
+uses cam/'s capture, JPEG and motion code, which `tt7cam snap` proved on the
+panel (gotchas.md). **It is off by default.**
+
+### Design
+
+- **A worker process.** tt7d forks a child (`camera_worker.c`) that alone
+  opens `/dev/video0` and `/dev/ion`. The two talk over a socketpair
+  (`camera_proto.h`: an 8-byte type/length header, then the payload), which
+  tt7d reads from its poll loop without ever blocking. Why a process and
+  not a thread: the risk is the kernel driver itself (a DQBUF that never
+  returns, a crash in the ion or IPP path), and a thread stuck in the driver
+  cannot be killed without killing tt7d. A process can be, and a crash in it
+  leaves the display and the HTTP server running. Its only cost is a fork
+  and one copy of each JPEG over the socket. The child closes every
+  descriptor it inherited except its socket, and `PR_SET_PDEATHSIG` stops it
+  if tt7d dies.
+- **Only the worker touches the camera.** On-request mode (presence off)
+  opens the camera for each snapshot: `settle_frames` frames for
+  auto-exposure (29 by default: tt7cam snap's 30 frames with the last kept),
+  then one kept frame, then `cam_close`. Presence mode opens it once and keeps
+  one streaming session. Every `presence_interval_ms` it queues a buffer,
+  takes the frame, scores it with motion.c (32×18 grid means of the luma,
+  which is the downsampling) and sends a tick. A snapshot request while
+  presence runs gets the frame just scored (at most one interval old) and
+  never opens the device a second time.
+- **Supervision.** A worker that sends nothing for `worker_timeout_s` (in
+  presence mode it ticks every interval; in on-request mode the clock runs
+  only while a snapshot is asked for) gets SIGTERM. The worker's handler
+  makes its capture loop end through `cam_close`: STREAMOFF, then the ion
+  buffer is unmapped and freed. 1 s later it gets SIGKILL, and tt7d reaps it
+  with `waitpid(WNOHANG)` and logs each step. After SIGKILL the kernel
+  releases the video and ion descriptors on exit. Whether this driver
+  does a STREAMOFF in its release path is unverified. A worker stuck in
+  uninterruptible sleep cannot be reaped; tt7d then says so once in the log
+  and `last_error`, and starts no second worker while the first holds the
+  device. Failed workers restart after 1 s, doubling to 60 s.
+- **Snapshots stay in memory.** The latest JPEG lives in tt7d's memory and
+  is served again for `snapshot_max_age_s` (2 s), which also rate-limits
+  captures. Turning the camera off frees it. No picture is ever written to
+  /data. A snapshot request whose capture has not finished waits in the
+  camera module (the server's `take_over` hook, as the WebSocket does) and is
+  answered when the JPEG arrives. At most 4 requests wait at once.
+- **Presence and the display** (`presence.c`). On arrival, with
+  `presence_wake` on and the backlight at 0, presence calls the same
+  `panel_wake` as `POST /display/wake`. With `presence_idle_blank_s` > 0 it
+  blanks again that many seconds after presence ends, but only a display
+  that presence itself woke. A display someone woke or blanked by hand in
+  the meantime is left alone. 0 (the default) never blanks. When the
+  presence worker stops or dies, presence reports gone.
+
+### Settings (`<data-dir>/camera.conf`)
+
+`KEY=VALUE` lines like mqtt.conf, written by `PUT /api/v1/config/camera`
+(whose JSON uses the same names, except `enabled` for `camera`). `--camera
+on|off` overrides `camera` and then locks it (`PUT` gets 409 `set_by_flag`).
+
+| Key (JSON) | Default | Meaning |
+|---|---|---|
+| `camera` (`enabled`) | off | the camera at all |
+| `presence` | off | presence detection (a streaming worker) |
+| `presence_wake` | off | presence wakes a blank display |
+| `presence_idle_blank_s` | 0 | blank a display presence woke after this long without presence; 0 = never |
+| `presence_interval_ms` | 500 | time between presence frames (100-10000) |
+| `presence_threshold` | 8 | motion score (mean luma deviation) that turns presence on; off below half, after 3 quiet frames |
+| `snapshot_interval` | 0 | seconds between snapshots published to MQTT; 0 = only on `cmd/snapshot` |
+| `snapshot_max_age_s` | 2 | a snapshot younger than this is served from memory |
+| `settle_frames` | 29 | frames dropped for auto-exposure before an on-request snapshot's frame |
+| `worker_timeout_s` | 10 | silence before the worker is killed (2-600) |
+
+Changing `camera`, `presence`, the interval, threshold or settle frames
+restarts the worker (SIGTERM, a clean exit, a new one). Each accepted PUT
+bumps the device-wide `config_revision`.
+
+```sh
+T=$(cat ~/.config/tt7/token); P=<panel-ip>
+curl -s -X PUT -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
+     -d '{"enabled": true}' http://$P/api/v1/config/camera
+curl -s -H "Authorization: Bearer $T" -o /tmp/tt7-snap.jpg -D - http://$P/api/v1/camera/snapshot
+# HTTP/1.1 200 OK, Content-Type: image/jpeg, X-Captured-At: 2026-09-28T15:02:03.243Z
+curl -s -X PUT -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
+     -d '{"presence": true, "presence_wake": true, "presence_idle_blank_s": 300}' http://$P/api/v1/config/camera
+```
+
+### Reported
+
+- `/info` `capabilities.camera`: `{"available": true, "enabled": false,
+  "presence": false, "device": "/dev/video0", "test_source": false,
+  "video4linux_devices": ["video0"], "snapshot": {"path":
+  "/api/v1/camera/snapshot", "format": "image/jpeg", "width": 1280,
+  "height": 720, "quality": 80}, "config": "/api/v1/config/camera"}`.
+  `available` means the device node exists; `enabled` is the setting.
+- `/state` `camera`: `{"enabled", "presence_enabled", "present" (null until
+  the detector has scored a frame, or while presence is off),
+  "presence_changed_at", "last_snapshot_at", "worker" ("off", "running",
+  "stopping", "restarting"), "worker_pid", "worker_restarts",
+  "frames_scored", "last_error"}`.
+- WebSocket `GET /api/v1/events`: `{"type": "presence", "present": true,
+  "score": 23.41, "timestamp": "...", "monotonic_ms": ...}` on each change.
+- MQTT, under `tt7/<device id>/`: `presence` (retained `ON`/`OFF`; an empty
+  retained payload clears it while presence is off), `camera/image` (a raw
+  JPEG, not retained) after `cmd/snapshot` or every `snapshot_interval`
+  seconds, and `event/error` `{"type": "error", "error": "camera_disabled" |
+  "camera_busy", "command": "snapshot", ...}` when a `cmd/snapshot` cannot be
+  served. Home Assistant gets a `camera` entity while the camera is on and an
+  occupancy `binary_sensor` while presence is on; both are removed (empty
+  retained configs) when turned off. HA's MQTT camera does not ask for
+  pictures, so it shows one only after `cmd/snapshot` or with
+  `snapshot_interval` set. tt7d's MQTT send queue is 512 KiB so a snapshot
+  fits; a bigger JPEG is dropped and logged.
+- The control panel's Camera section: the switches (with the token), "Take
+  snapshot" (an authenticated fetch, shown as a `data:` URL, which the
+  existing `img-src 'self' data:` allows, so the CSP did not change), and the
+  presence state. The picture leaves the page when it is locked.
+
+### Testing without the camera
+
+`--camera-fake-source PATH` (**test only**, never set on the panel) makes the
+worker read 1280×720 NV12 frames from a file (looped) or a FIFO instead of
+the camera. Everything after the frame source is the real code.
+`test_camera_e2e.py` feeds a FIFO from a thread: an empty room, or a bright
+block for "someone". A read from the fake source ignores signals the way a
+stuck driver call would, so pausing the feeder makes a genuinely stuck worker
+that only SIGKILL ends. tt7d logs `camera: TEST MODE` when the flag is set,
+and `/info` shows `test_source: true`.
+
+### Trying it on the panel
+
+With a new `build/tt7d` installed (see "Fast iteration") and the token in
+`~/.config/tt7/token`:
+
+1. `curl -s http://<panel-ip>/api/v1/info | python3 -m json.tool | grep -A12 '"camera"'`:
+   `available` true, `enabled` false. `GET /camera/snapshot` gives 503
+   `camera_disabled`.
+2. Enable (above), then `ssh $S $P tail -f /data/tt7/app.log`: `camera: worker
+   N started (snapshots on request, /dev/video0)`. Take a snapshot with the
+   curl above. It should take about 2-3 s (30 frames), then come from memory
+   within 2 s. Look at `/tmp/tt7-snap.jpg`, then delete it (gotchas.md
+   privacy rule). On failure the worker writes capture.c's step log to
+   app.log. `dmesg` noise like "Format is Invalidate" and "get cif ldo
+   failed!" is normal for this driver. Anything with `BUG`, `Oops` or
+   `rk29_vipmem` is not: stop there.
+3. `ssh $S $P 'grep -i -E "vipmem|camera" /proc/iomem'` before and after a
+   snapshot in on-request mode. `rk_camera_vb` is our buffer while the driver
+   maps it (tt7cam probe greps for the same regions); it should be gone
+   afterwards, because the worker closes the camera each time.
+4. Presence: PUT `{"presence": true}`. `/state` `camera.frames_scored` should
+   climb about 2 per second and `present` should become false. Walk in front
+   of the panel: `present` true; `tools/events.py` (or the panel's Input
+   section) shows the presence event; MQTT `tt7/<id>/presence` goes `ON`.
+   Blank the display, walk away and back: with `presence_wake` on it lights
+   up. Leave presence running for a while and watch dmesg and the log: a
+   `gave no sign of life` line means the streaming session stalled (see
+   "Unverified").
+5. Kill test, with presence on: `ssh $S $P kill -STOP <worker pid>` (from
+   `/state camera.worker_pid`): after `worker_timeout_s` the log shows SIGTERM,
+   SIGKILL, `reaped (killed by signal 9)`, and a new worker. Frames and the
+   control panel keep working throughout.
+6. Off: PUT `{"enabled": false}`. The worker exits with a clean STREAMOFF (no
+   `reaped` line), and `/state` `camera.last_snapshot_at` becomes null.
 
 ## On the panel
 
@@ -751,3 +929,20 @@ curl -s http://<panel-ip>/api/v1/state | python3 -m json.tool | grep -A10 '"mqtt
   192.168.23.123, not mosquitto, and not the panel's network stack.
 - The Home Assistant discovery payloads follow the documentation cited above
   but have not been loaded into a real Home Assistant.
+- The camera in tt7d has not run on the panel. Only tt7cam's `probe` and `snap`
+  captured there (30 back-to-back grabs in one session). Unverified:
+  - The streaming session in presence mode: grabbing one frame every 500 ms
+    with no buffer queued in between. tt7cam `motion` does this, but was not
+    run on the panel. The driver may stall, keep a stale frame in its
+    vipmem, or need the stream restarted each time. If it does, the worker
+    timeout will show it (`gave no sign of life`), and the fix is STREAMOFF
+    and STREAMON around each grab, at the cost of the auto-exposure settling.
+  - The kernel side of SIGKILL: after a killed worker, whether the RK CIF
+    driver's release path stops the stream and returns its buffer. A
+    SIGTERM stop goes through `cam_close` and is fine.
+  - JPEG encode time for 1280×720 on the Cortex-A9 (it runs in the worker,
+    so it never holds up the display), and the JPEG size of a real room at
+    quality 80 against the 512 KiB MQTT queue.
+  - `presence_threshold` 8 and the 32×18 grid on real lighting (auto-exposure
+    steps, a TV, sunlight moving).
+  - The HA camera and occupancy entities in a real Home Assistant.

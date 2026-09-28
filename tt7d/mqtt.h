@@ -30,8 +30,24 @@ struct mqtt_actions {
     int (*reboot)(void *ctx);
 };
 
+struct mqtt_app;
+
+/* Another module's MQTT entities and commands (the camera). Every hook is
+ * optional. mqtt.c calls them at the matching moments of its own work, so
+ * that module never has to track the connection itself. */
+struct mqtt_extension {
+    void *ctx;
+    /* Publish (announce) or remove (!announce: empty retained payloads) this
+     * module's Home Assistant configs for device_id, with mqtt_app_publish_discovery. */
+    void (*discovery)(void *ctx, struct mqtt_app *m, const char *device_id, int announce);
+    /* Just connected: publish this module's retained topics. */
+    void (*connected)(void *ctx, struct mqtt_app *m);
+    /* A live cmd/<name> that mqtt.c does not know. Return 0 if taken, -1 if not. */
+    int (*command)(void *ctx, struct mqtt_app *m, const char *name, const uint8_t *payload, size_t len);
+};
+
 struct mqtt_app {
-    struct mqtt_config cfg;      /* in effect: mqtt.conf, then the flags on top */
+    struct mqtt_config cfg;     /* in effect: mqtt.conf, then the flags on top */
     struct mqtt_config file_cfg; /* what mqtt.conf holds (PUT edits this) */
     unsigned flag_fields;        /* bitmask of enum mqtt_field set by --mqtt-* flags */
     const char *const *flag_kv;  /* those flags as key, value pairs (argv) */
@@ -45,6 +61,7 @@ struct mqtt_app {
     const struct fallback_screen *screen; /* set by main after init; NULL = no fallback clock */
     const struct timespec *last_touch; /* wall time of the last touch, kept by events.c; NULL = none yet */
     struct mqtt_actions actions;
+    struct mqtt_extension ext;
     struct mqtt_client client;
     char base[160]; /* "<prefix>/<device id>" */
     unsigned long config_revision;
@@ -79,6 +96,35 @@ void mqtt_app_frame_accepted(struct mqtt_app *m);
  * Touch events do not go over MQTT (the owner chose a WebSocket). Dropped when
  * not connected. */
 void mqtt_app_event(struct mqtt_app *m, const char *type, const char *json);
+
+/* Plug in another module's entities and commands (after mqtt_app_init). */
+void mqtt_app_set_extension(struct mqtt_app *m, const struct mqtt_extension *x);
+
+/* 1 while connected to the broker. */
+int mqtt_app_connected(const struct mqtt_app *m);
+
+/* Publish raw bytes (an image, say) to <prefix>/<device id>/<leaf>. Returns
+ * 0 if queued, -1 if not connected or too big for the send queue (counted
+ * as dropped). */
+int mqtt_app_publish(struct mqtt_app *m, const char *leaf, const void *payload, size_t len, int retain);
+
+/* Publish a retained Home Assistant config for device_id's `object`
+ * (homeassistant/<component>/<device_id>/<object>/config); "" removes it. */
+void mqtt_app_publish_discovery(struct mqtt_app *m, const char *component, const char *device_id, const char *object,
+                                const char *config);
+
+/* The members every discovery config of this device shares, for an entity
+ * `object`: ,"unique_id":...,"availability_topic":...,"device":{...},"origin":{...}
+ * (leading comma, no closing brace). */
+void mqtt_app_discovery_common(const struct mqtt_app *m, const char *object, struct sbuf *sb);
+
+/* Announce or remove every entity again (a module's entities changed). */
+void mqtt_app_resync_discovery(struct mqtt_app *m);
+
+/* The device-wide config_revision (SPEC 35). It lives here because MQTT was
+ * the first runtime setting; other settings bump it too. Returns the new
+ * value, saved to <data dir>/config-revision. */
+unsigned long mqtt_app_bump_revision(struct mqtt_app *m);
 
 /* The "mqtt" member of /api/v1/state (key included, no comma). */
 void mqtt_app_state_member(struct mqtt_app *m, struct sbuf *sb);

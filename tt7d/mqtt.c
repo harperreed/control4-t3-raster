@@ -283,13 +283,28 @@ static void kv(struct sbuf *sb, const char *key, const char *value) {
     sb_json_str(sb, value);
 }
 
+void mqtt_app_discovery_common(const struct mqtt_app *m, const char *object, struct sbuf *sb) {
+    char topic[256];
+    sb_printf(sb, ",\"unique_id\":\"%s_%s\"", m->device_id, object);
+    snprintf(topic, sizeof topic, "%s/availability", m->base);
+    kv(sb, "availability_topic", topic);
+    sb_puts(sb, ",\"device\":{\"identifiers\":[");
+    sb_json_str(sb, m->device_id);
+    sb_puts(sb, "],\"name\":");
+    char name[64];
+    snprintf(name, sizeof name, "TT7 %s", m->device_id);
+    sb_json_str(sb, name);
+    sb_puts(sb, ",\"model\":\"" MODEL "\",\"manufacturer\":\"" MANUFACTURER "\",\"sw_version\":");
+    sb_json_str(sb, m->sw_version);
+    sb_puts(sb, "},\"origin\":{\"name\":\"tt7d\",\"sw_version\":");
+    sb_json_str(sb, m->sw_version);
+    sb_puts(sb, "}");
+}
+
 static void entity_config(const struct mqtt_app *m, const struct entity *e, struct sbuf *sb) {
     char topic[256];
     sb_puts(sb, "{\"name\":");
     sb_json_str(sb, e->name);
-    sb_printf(sb, ",\"unique_id\":\"%s_%s\"", m->device_id, e->object);
-    snprintf(topic, sizeof topic, "%s/availability", m->base);
-    kv(sb, "availability_topic", topic);
     if (!strcmp(e->component, "button")) {
         snprintf(topic, sizeof topic, "%s/cmd/%s", m->base, e->object);
         kv(sb, "command_topic", topic);
@@ -309,17 +324,8 @@ static void entity_config(const struct mqtt_app *m, const struct entity *e, stru
     kv(sb, "unit_of_measurement", e->unit);
     kv(sb, "state_class", e->state_class);
     kv(sb, "entity_category", e->category);
-    sb_puts(sb, ",\"device\":{\"identifiers\":[");
-    sb_json_str(sb, m->device_id);
-    sb_puts(sb, "],\"name\":");
-    char name[64];
-    snprintf(name, sizeof name, "TT7 %s", m->device_id);
-    sb_json_str(sb, name);
-    sb_puts(sb, ",\"model\":\"" MODEL "\",\"manufacturer\":\"" MANUFACTURER "\",\"sw_version\":");
-    sb_json_str(sb, m->sw_version);
-    sb_puts(sb, "},\"origin\":{\"name\":\"tt7d\",\"sw_version\":");
-    sb_json_str(sb, m->sw_version);
-    sb_puts(sb, "}}");
+    mqtt_app_discovery_common(m, e->object, sb);
+    sb_puts(sb, "}");
 }
 
 /* Publish every entity's config for device_id: the real config when it is
@@ -338,6 +344,13 @@ static void publish_discovery(struct mqtt_app *m, const char *device_id, int ann
         pub(m, topic, sb.buf && !sb.oom ? sb.buf : "", 1);
         sb_free(&sb);
     }
+    if (m->ext.discovery) m->ext.discovery(m->ext.ctx, m, device_id, announce);
+}
+
+void mqtt_app_publish_discovery(struct mqtt_app *m, const char *component, const char *device_id, const char *object,
+                                const char *config) {
+    char topic[256];
+    if (mqtt_discovery_topic(topic, sizeof topic, component, device_id, object) == 0) pub(m, topic, config, 1);
 }
 
 /* Announce (or remove) this device's entities, and remove those of a
@@ -359,6 +372,10 @@ static void sync_discovery(struct mqtt_app *m) {
     free(prev);
 }
 
+void mqtt_app_resync_discovery(struct mqtt_app *m) {
+    if (m->client.state == MQTT_UP) sync_discovery(m);
+}
+
 /* ---- connection callbacks -------------------------------------------------- */
 
 static void on_connected(void *ctx) {
@@ -371,6 +388,7 @@ static void on_connected(void *ctx) {
     sync_discovery(m);
     m->last_signature[0] = 0;
     maybe_publish_state(m, 1);
+    if (m->ext.connected) m->ext.connected(m->ext.ctx, m);
     if (!m->boot_sent) {
         struct timespec now, boot;
         clock_gettime(CLOCK_REALTIME, &now);
@@ -417,9 +435,14 @@ static void on_message(void *ctx, const char *topic, const uint8_t *payload, siz
         return;
     }
     enum mqtt_command cmd = mqtt_command_of(topic, m->base);
-    if (cmd == CMD_NONE) return;
     /* A retained command would replay on every reconnect (a reboot loop for
      * cmd/reboot): commands are only taken live. */
+    if (cmd == CMD_NONE) {
+        size_t n = strlen(m->base);
+        if (!retain && m->ext.command && !strncmp(topic, m->base, n) && !strncmp(topic + n, "/cmd/", 5))
+            m->ext.command(m->ext.ctx, m, topic + n + 5, payload, len);
+        return;
+    }
     if (retain) return;
     const char *name = strrchr(topic, '/') + 1;
     int (*op)(void *) = NULL;
@@ -601,6 +624,26 @@ void mqtt_app_event(struct mqtt_app *m, const char *type, const char *json) {
 
 void mqtt_app_state_changed(struct mqtt_app *m) { m->next_check_ms = 0; }
 
+void mqtt_app_set_extension(struct mqtt_app *m, const struct mqtt_extension *x) { m->ext = *x; }
+
+int mqtt_app_connected(const struct mqtt_app *m) { return m->client.state == MQTT_UP; }
+
+int mqtt_app_publish(struct mqtt_app *m, const char *leaf, const void *payload, size_t len, int retain) {
+    char topic[256];
+    if (snprintf(topic, sizeof topic, "%s/%s", m->base, leaf) >= (int)sizeof topic) return -1;
+    if (mqtt_client_publish(&m->client, topic, payload, len, retain) != 0) return -1;
+    clock_gettime(CLOCK_REALTIME, &m->last_publish);
+    m->have_last_publish = 1;
+    return 0;
+}
+
+unsigned long mqtt_app_bump_revision(struct mqtt_app *m) {
+    m->config_revision++;
+    if (save_revision(m, m->config_revision) != 0)
+        fprintf(stderr, "tt7d: could not save config-revision: %s\n", strerror(errno));
+    return m->config_revision;
+}
+
 void mqtt_app_frame_accepted(struct mqtt_app *m) {
     const struct frame_store *fs = m->frames;
     struct timespec now;
@@ -750,9 +793,7 @@ void mqtt_http_handle(struct mqtt_app *m, const struct http_request *req, const 
         resp_error(resp, 500, "write_failed", "could not write mqtt.conf; the running settings are unchanged");
         return;
     }
-    m->config_revision++;
-    if (save_revision(m, m->config_revision) != 0)
-        fprintf(stderr, "tt7d: mqtt: could not save config-revision: %s\n", strerror(errno));
+    mqtt_app_bump_revision(m);
 
     struct mqtt_config old = m->cfg;
     m->file_cfg = next;

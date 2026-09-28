@@ -63,6 +63,11 @@ void resp_error(struct response *resp, int status, const char *code, const char 
  * WWW-Authenticate). */
 int resp_require_bearer(const char *token, const struct http_request *req, struct response *resp);
 
+/* The whole HTTP reply for resp (status line, the headers every tt7d reply
+ * carries, body) appended to out. For a handler that took over a socket and
+ * answers later (the camera snapshot). An out-of-memory body becomes a 500. */
+void server_format_reply(struct response *resp, struct sbuf *out);
+
 /* Bind, then serve forever. Returns only if the listen address is unusable
  * (with a message in err). */
 int server_run(const struct server_config *cfg, const struct server_handlers *h, char *err, size_t errlen);

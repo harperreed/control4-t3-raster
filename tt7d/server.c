@@ -112,21 +112,25 @@ static void conn_free(struct conn *c) {
     free(c);
 }
 
-/* Serialise resp into c->out and switch to writing. */
-static void conn_reply(struct conn *c, struct response *resp, const struct server_config *cfg,
-                       const struct server_handlers *h) {
+void server_format_reply(struct response *resp, struct sbuf *out) {
     if (resp->body.oom) {
         sb_free(&resp->body);
         resp_error(resp, 500, "internal_error", "out of memory");
     }
-    sb_printf(&c->out,
+    sb_printf(out,
               "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\n"
               "X-Content-Type-Options: nosniff\r\n%s"
               "Connection: close\r\n%s\r\n",
               resp->status, http_reason(resp->status),
               resp->content_type ? resp->content_type : "application/json; charset=utf-8", resp->body.len,
               CONTENT_SECURITY_POLICY, resp->extra_headers);
-    sb_add(&c->out, resp->body.buf ? resp->body.buf : "", resp->body.len);
+    sb_add(out, resp->body.buf ? resp->body.buf : "", resp->body.len);
+}
+
+/* Serialise resp into c->out and switch to writing. */
+static void conn_reply(struct conn *c, struct response *resp, const struct server_config *cfg,
+                       const struct server_handlers *h) {
+    server_format_reply(resp, &c->out);
     if (c->out.oom) { /* nothing sensible to send */
         c->out.len = 0;
     }

@@ -1,17 +1,38 @@
-stb_truetype: single-file TrueType rasterizer, vendored for tt7d's fallback clock (tt7d/font.c).
+stb: single-file libraries, two of them vendored here:
+  stb_truetype.h     TrueType rasterizer, for tt7d's fallback clock (tt7d/font.c)
+  stb_image_write.h  image writer, for JPEG output (cam/jpeg.c, used by cam/tt7cam and tt7d's camera)
 
 Source:   https://github.com/nothings/stb
 Commit:   2c980bb59875b0d32144a71867fbdebb2f77cd20 (repo master on 2026-09-27; committed 2026-08-02;
-          the same commit cam-spike vendors stb_image_write from)
-Version:  stb_truetype v1.26
+          both headers come from this one commit)
+Versions: stb_truetype v1.26, stb_image_write v1.16
 License:  public domain (Unlicense) or MIT, your choice (LICENSE, copied unmodified from the same commit;
-          the same text also closes stb_truetype.h)
+          the same text also closes each header)
 Fetched:  curl -sSfL https://raw.githubusercontent.com/nothings/stb/<commit>/<file>
 
-sha256 (files are byte-identical to upstream; nothing is modified):
+sha256 of the upstream files as fetched:
 ecd30b05e0dd4fea3a13c26810dd9e1992dc379049482c393d5a19e6b5090aab  stb_truetype.h
+cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05  stb_image_write.h
 bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63  LICENSE
 
-Build: tt7d/font.c defines STB_TRUETYPE_IMPLEMENTATION and STBTT_STATIC, and
-only feeds it the Inter subsets embedded at build time
-(third_party/fonts/inter/PROVENANCE), never fonts from the network.
+stb_truetype.h and LICENSE are byte-identical to upstream.
+
+ONE LOCAL CHANGE in stb_image_write.h. In
+stbiw__jpg_writeBits, `bitBuf` is an int and `bitBuf <<= 8` overflows it, which
+is undefined behaviour in C; the host tests' -fsanitize=undefined reports it.
+Only bits 16..23 of bitBuf are ever read, so masking to 24 bits in unsigned
+arithmetic gives the same bytes. Checked: a 640x480 test frame encodes to a
+byte-identical JPEG with the upstream and patched headers (gcc, 2026-09-27).
+
+-      bitBuf <<= 8;
++      bitBuf = (int)(((unsigned)bitBuf << 8) & 0xffffffu); /* tt7cam: was bitBuf <<= 8 (signed overflow, UB) */
+
+sha256 of the patched stb_image_write.h:
+ada1ba288bfd94a2d4190d5e992108f0f1dcb6235a64621f4fc885de8b4ecf6a  stb_image_write.h
+
+Build:
+- tt7d/font.c defines STB_TRUETYPE_IMPLEMENTATION and STBTT_STATIC, and only
+  feeds it the Inter subsets embedded at build time
+  (third_party/fonts/inter/PROVENANCE), never fonts from the network.
+- cam/jpeg.c defines STB_IMAGE_WRITE_IMPLEMENTATION and STBI_WRITE_NO_STDIO,
+  and only calls stbi_write_jpg_to_func(). See the top-level Makefile.

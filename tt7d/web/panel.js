@@ -216,6 +216,7 @@ function renderState(state) {
   ]);
   renderPreview(state);
   renderDisplay(state);
+  document.dispatchEvent(new CustomEvent("tt7-state", { detail: state })); // other sections (camera.js)
 }
 
 function renderDisplay(state) {
@@ -390,6 +391,7 @@ function connectEvents() {
     try { ev = JSON.parse(m.data); } catch (e) { return; }
     eventRetryMs = 1000;
     showEvent(ev);
+    document.dispatchEvent(new CustomEvent("tt7-event", { detail: ev })); // other sections (camera.js)
   });
   ws.addEventListener("close", () => {
     if (eventSocket !== ws) return; // disconnectEvents() closed it on purpose

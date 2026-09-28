@@ -187,14 +187,7 @@ void sysinfo_capabilities(struct sbuf *sb, const char *root) {
     sb_printf(sb, "},\"audio_input\":{\"available\":%s,\"devices\":", count_kept(&snd, is_capture) ? "true" : "false");
     json_names(sb, &snd, is_capture);
     sb_puts(sb, "}");
-
-    /* A video4linux node exists on the TT7, but whether it is the camera is
-     * unverified: report the nodes and leave "available" unknown. */
-    struct names v4l;
-    list_dir(root, "class/video4linux", &v4l);
-    sb_printf(sb, ",\"camera\":{\"available\":%s,\"video4linux_devices\":", v4l.n ? "null" : "false");
-    json_names(sb, &v4l, NULL);
-    sb_puts(sb, "}");
+    /* The camera member comes from camera.c, which knows its device and whether it is on. */
 }
 
 void sysinfo_power(struct sbuf *sb, const char *root) {

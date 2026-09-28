@@ -9,8 +9,10 @@
 #include <stdint.h>
 
 /* Queued bytes allowed at once. A publish that does not fit pushes out the
- * oldest queued publishes; nothing ever waits for the socket. */
-#define MQTT_OUT_CAP (64 * 1024)
+ * oldest queued publishes; nothing ever waits for the socket. Sized for one
+ * camera snapshot (a 1280x720 JPEG at quality 80, typically 50-250 KiB)
+ * plus the usual telemetry. */
+#define MQTT_OUT_CAP (512 * 1024)
 /* Incoming packets bigger than this are skipped, not buffered. */
 #define MQTT_IN_CAP (16 * 1024)
 
