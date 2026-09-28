@@ -8,6 +8,9 @@
 - Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
 - Approved: "lets deploy it" (2026-09-27): flash image 00235b6f… (TX-stall watchdog) over Wi-Fi
 - Approved: "yep" (2026-09-27): deploy tt7d via /data/tt7/app overlay + push test frame
+- Approved: "i love 1" (2026-09-27): web firmware update for the tt7d bundle (M8-lite) via init's overlay rollback; boot-image-over-web deferred
+- Approved: "3. we should do a, and b" (2026-09-27): camera snapshot (JPEG, HA camera) + presence detection to wake the display; camera off by default
+- Approved: "for mqtt i think we shodl report touch events. so we can make a touch display." (2026-09-27): M3 input (touch + buttons) over WebSocket AND MQTT event topics
 - Open: default rotation 90 is a guess, so confirm with tools/make-test-frame.py photo
 - Open (older): Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
