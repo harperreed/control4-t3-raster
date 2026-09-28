@@ -114,3 +114,6 @@
 - musl + no zoneinfo files: TZ must be a POSIX string (`CST6CDT,M3.2.0,M11.1.0`), never `America/Chicago`. tt7d refuses zone names.
 - The test_e2e/test_mqtt_e2e daemons: test_e2e runs with `--fallback-timeout 0` (it checks an untouched fb before the first frame); the fallback has its own `test_fallback_e2e.py`.
 - **Only one ntpd.** Upstream MMKeypad init spawned its own `ntpd -p pool.ntp.org`, and tt7-app starts ours with the sync hook, so two ran at once (seen 2026-09-28, PIDs 101 and 154). Removed from init.c (PROVENANCE change 10); check-image guards it. Images flashed before that still have it; `kill` the one whose parent is PID 1 and whose args lack `-S`.
+- **Touch verified on the glass (2026-09-28), rotation 270:** a top-left tap came in at (45,14), the top edge at y≈6, bottom-right touches at around (1091–1168, 630–702). Multitouch protocol B works: several fingers down at once, each with its own down and up. Touch events carried the on-screen `fallback-clock-*` frame_id.
+- **Buttons (rk29-keypad):** power = 116, volume_up = 115 (volume_down presumably 114, not yet pressed). `key_143` (KEY_WAKEUP) fires alongside touches and isn't a physical button, so treat it as noise.
+- **Fallback clock seen live:** it took over about 5 min after the restored frame, once NTP had synced (marker /run/tt7/ntp-synced).

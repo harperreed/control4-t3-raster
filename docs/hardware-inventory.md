@@ -33,7 +33,7 @@ Anything not measured is marked **unknown**. SPEC.md §3 says: discover, don't a
 | Device | Node | Notes |
 |---|---|---|
 | `gslX680` (Silead) touch, i2c 2-0040 | `event1` | Same controller family as MMKeypad's in-wall 7". Touch dots landed under the finger in native orientation (Doctor Biz: "works really great"). Absolute axis ranges were **not recorded** (no evtest in the image); tt7probe reads them via EVIOCGABS at runtime |
-| `rk29-keypad` (gpio-keys) | `event0` | Power and volume buttons expected. Which keycodes map to which button is **unknown** until a press is logged |
+| `rk29-keypad` (gpio-keys) | `event0` | power = 116, volume_up = 115 (logged 2026-09-28); volume_down presumably 114. `key_143` (KEY_WAKEUP) fires alongside touches: not a button |
 
 ## Networking
 
@@ -65,5 +65,5 @@ Neither has been exercised yet (SPEC §51: no audio or camera in v1).
 
 1. Dock Ethernet: which driver it uses, and whether it survives the init forcing OTG into device mode.
 2. Charging behaviour on the dock's own power adapter.
-3. Keycodes for power and volume on `rk29-keypad`, and gslX680's absolute axis ranges: both need a dump of EVIOCGABS/EVIOCGBIT or a logged press.
+3. Confirm volume_down's keycode (114 expected). The gslX680 raw range is x 0..1280, y 0..800 (EVIOCGABS via tt7d /info).
 4. Why the old partitions (`kernel`, `system`) read unstably while freshly written `boot` doesn't (gotchas.md).
