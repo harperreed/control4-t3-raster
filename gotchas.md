@@ -92,3 +92,9 @@
 - The integration test uses amqtt as the broker and paho-mqtt as the client. Both are pinned in the Makefile and run with `uv run --no-project --with ...`. mosquitto is not installed, and installing it needs sudo.
 - Touch events stay off MQTT (owner decision, 2026-09-27): M3 sends them over a WebSocket. Only `event/button` has an MQTT hook.
 - After the M4+M5 merge (branch tt7d-m4-panel), MQTT `cmd/brightness|blank|wake|reboot` run the same `panel_*` actions as the HTTP routes (panel.h), so wake after an MQTT blank restores the old level. A raw `cmd/brightness NN` is written as is. `cmd/reboot` and the HA Reboot button still need `allow_reboot_cmd=true` (default false). Host-tested only; not yet run on the panel.
+
+## Camera: CAPTURE WORKS on our custom Linux (2026-09-27)
+- `tt7cam` (branch cam-spike, sha256 113e4e69…): `probe` then `snap` on the TT7 captured live 1280×720 NV12 from `/dev/video0` (driver rk3066b-camera, card `nt99141_front_3-180_100_100`) via V4L2_MEMORY_OVERLAY + ion heap NOR(0) (phys 0x98800000). The luma range and 29/29 differing frame pairs prove live video, and the photo shows the room (ceiling) with plausible colours.
+- MMKeypad's blocker doesn't apply here: `rk29_ipp` loads on our unit's kernel (they hit a 3.0.8 vs 3.0.36 vermagic wall).
+- Stick to 1280×720 (sensor native). The driver has BUG() paths for sizes that overflow `rk29_vipmem`. After a clean STREAMOFF no camera buffer stays reserved. The dmesg noise ("Format is Invalidate", "get cif ldo failed!") is normal for this driver.
+- Privacy: snapshots stay out of git and off the panel's /data. Delete them from /tmp after pulling.
