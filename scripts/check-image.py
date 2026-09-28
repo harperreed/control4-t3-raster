@@ -193,6 +193,8 @@ def main():
     init = entries.get("init", (0, 0, 0, b""))[3]
     r.check(b"/data/tt7/usb-watchdog.log" in init, "init includes the USB link watchdog")
     r.check(b"tt7-usb-probe" in init, "init includes the RNDIS tx-stall remedy")
+    r.check(b"/data/tt7/modules/" in init,
+            "init prefers vendor modules from /data/tt7/modules (repairs a rotted /system copy)")
     r.check(b"pool.ntp.org" not in init and b"ntpd" not in init,
             "init starts no ntpd of its own (tt7-app owns NTP, with the sync hook)")
     app = entries.get("usr/bin/tt7-app", (0, 0, 0, b""))[3]

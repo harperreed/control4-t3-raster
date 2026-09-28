@@ -131,6 +131,12 @@ Only `init/init.c` changed. Every other file here is byte-identical to upstream
     were seen running at once on the panel. The spawn is removed; check-image
     asserts that init contains no ntpd.
 
+11. **Vendor module override from /data (2026-09-28).** `kver_module()` now
+    prefers `/data/tt7/modules/<file name>` over the `/system` copy it would
+    pick. Old NAND rotted three 16 KiB pages of a wall T3's
+    `rkwifi.oob.ko` ("Module len 577850 truncated"), and we never write
+    `/system`. check-image asserts the override path is in init.
+
 Everything else, including network and Dropbear bring-up order, the USB
 RNDIS+ACM gadget setup (init only writes `enable` afterwards, see 9), the NAND module insmod, the
 vendor module loads, the Wi-Fi driver pick and the respawn loop, is upstream's

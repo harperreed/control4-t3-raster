@@ -235,12 +235,31 @@ static void insmod_p(const char *path, const char *param) {
  * that: return the "<path>.<release>" variant if it exists on disk, else the
  * plain path. This is what makes the 3.0.36+ vendor blobs load on our 4.0.0
  * kernel instead of getting vermagic-rejected. `out` must be >= 256B. */
+/* Vendor modules live on stock /system, which we never write. Old NAND can rot
+ * whole pages there (a wall T3's rkwifi.oob.ko had three bad 16 KiB pages and
+ * failed with "Module len ... truncated"). A good copy dropped at
+ * /data/tt7/modules/<same file name> wins over the /system file. */
+#define MODULE_OVERRIDE_DIR "/data/tt7/modules/"
+
 static const char *kver_module(const char *path, char *out, size_t n) {
     struct utsname u;
+    const char *chosen = path;
     if (uname(&u) == 0) {
         snprintf(out, n, "%s.%s", path, u.release);
-        if (access(out, F_OK) == 0) return out;
+        if (access(out, F_OK) == 0) chosen = out;
     }
+    const char *base = strrchr(chosen, '/');
+    base = base ? base + 1 : chosen;
+    char over[256];
+    snprintf(over, sizeof over, "%s%s", MODULE_OVERRIDE_DIR, base);
+    if (access(over, R_OK) == 0) {
+        char msg[400];
+        snprintf(msg, sizeof msg, "module override: %s instead of %s", over, chosen);
+        log_line(msg);
+        snprintf(out, n, "%s", over);
+        return out;
+    }
+    if (chosen == out) return out;
     return path;
 }
 
