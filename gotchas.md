@@ -98,3 +98,11 @@
 - MMKeypad's blocker doesn't apply here: `rk29_ipp` loads on our unit's kernel (they hit a 3.0.8 vs 3.0.36 vermagic wall).
 - Stick to 1280×720 (sensor native). The driver has BUG() paths for sizes that overflow `rk29_vipmem`. After a clean STREAMOFF no camera buffer stays reserved. The dmesg noise ("Format is Invalidate", "get cif ldo failed!") is normal for this driver.
 - Privacy: snapshots stay out of git and off the panel's /data. Delete them from /tmp after pulling.
+
+## Fallback clock + NTP (2026-09-28, branch tt7d-fallback-clock; host-tested only)
+- BusyBox 1.36.1 ntpd's `-S` hook gets `step|stratum|periodic|unsync` in argv and `stratum`, `offset`, `freq_drift_ppm`, `poll_interval` in the env (networking/ntpd.c `run_script`). On `step`, `$stratum` is already 16 (ntpd resets it just before), so "stratum < 16" alone would miss the first sync. `tt7-ntp-hook` counts a step as synced.
+- Don't use `adjtimex` to ask "is the clock synced" with BusyBox ntpd: it never sets `ADJ_MAXERROR` (commented out in ntpd.c), so `STA_UNSYNC` is not a reliable signal. tt7d reads the hook's marker `/run/tt7/ntp-synced` (RAM) instead.
+- ntpd backs off failed DNS lookups to minutes (`HOSTNAME_INTERVAL * dns_errors`, up to 4 × 63 s). tt7-app waits for a default route before starting it, so "Setting clock…" doesn't linger after Wi-Fi connects.
+- BusyBox's usage text is compressed in our build (`CONFIG_FEATURE_COMPRESS_USAGE`), so grepping the binary for usage strings fails; check-image looks for `freq_drift_ppm` (from `run_script`) instead.
+- musl + no zoneinfo files: TZ must be a POSIX string (`CST6CDT,M3.2.0,M11.1.0`), never `America/Chicago`. tt7d refuses zone names.
+- The test_e2e/test_mqtt_e2e daemons: test_e2e runs with `--fallback-timeout 0` (it checks an untouched fb before the first frame); the fallback has its own `test_fallback_e2e.py`.
