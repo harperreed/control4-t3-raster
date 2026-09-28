@@ -36,7 +36,7 @@ void ipv4_of(const char *ifname, char *out, size_t n);
  * name and modalias. /info capabilities and /hardware share this rule. */
 const char *sysinfo_input_role(const char *name, const char *modalias);
 
-/* Append the "capabilities" object's members (no braces) for /info. */
+/* Append the "capabilities" object's members (no braces) for /info, except the camera (camera.h). */
 void sysinfo_capabilities(struct sbuf *sb, const char *sysfs_root);
 
 /* Append the "power" object and the "network" object (with keys) for /state. */

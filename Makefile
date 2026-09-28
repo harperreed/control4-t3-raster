@@ -35,11 +35,12 @@ TT7D_LIB     := tt7d/json.c tt7d/flatconf.c tt7d/http.c tt7d/render.c tt7d/sha25
                 tt7d/sha1.c tt7d/ws.c tt7d/touch.c tt7d/input.c \
                 tt7d/fallback.c tt7d/timesync.c tt7d/font.c tt7d/clockface.c \
                 tt7d/camera_config.c tt7d/camera_proto.c tt7d/presence.c
-TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/panel.c tt7d/events.c tt7d/fallback_screen.c tt7d/main.c
+TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/panel.c tt7d/events.c tt7d/fallback_screen.c tt7d/main.c \
+                tt7d/camera.c tt7d/camera_worker.c cam/capture.c cam/yuv.c cam/sentinel.c cam/motion.c cam/jpeg.c
 TT7D_WEB     := tt7d/web/index.html tt7d/web/panel.css tt7d/web/panel.js
 TT7D_HDRS    := $(wildcard tt7d/*.h) probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h third_party/lodepng/lodepng.h \
-                third_party/stb/stb_truetype.h
-TT7D_INC     := -Itt7d -Iprobe -I$(FONT_DIR) -Ithird_party/lodepng -Ithird_party/stb
+                third_party/stb/stb_truetype.h $(wildcard cam/*.h) third_party/stb/stb_image_write.h
+TT7D_INC     := -Itt7d -Icam -Iprobe -I$(FONT_DIR) -Ithird_party/lodepng -Ithird_party/stb
 # The fallback clock's typefaces (third_party/fonts/inter/PROVENANCE), embedded like the web assets.
 TT7D_FONTS   := third_party/fonts/inter/InterDisplay-Light.ttf third_party/fonts/inter/Inter-Regular.ttf
 LODEPNG      := third_party/lodepng/lodepng.cpp
@@ -58,7 +59,7 @@ CAM_UNITS := kabi yuv sentinel motion jpeg
 # Pinned Pillow decodes tt7cam's JPEG in the host end-to-end test.
 CAM_PILLOW := uv run --quiet --no-project --with pillow==12.3.0 python3
 
-.PHONY: all image busybox dropbear wifi tt7d cam test-host test-e2e test-mqtt test-input test-cam check clean FORCE
+.PHONY: all image busybox dropbear wifi tt7d cam test-host test-e2e test-mqtt test-input test-camera test-cam check clean FORCE
 .DELETE_ON_ERROR:
 
 all: image
@@ -192,6 +193,11 @@ test-mqtt: $(B)/host/tt7d
 test-input: $(B)/host/tt7d
 	uv run --no-project --quiet $(MQTT_TEST_DEPS) python tt7d/test_input_e2e.py --daemon $(B)/host/tt7d
 
+# Camera: the real daemon and worker process, NV12 frames from a FIFO (the test-only
+# --camera-fake-source), a real amqtt broker; Pillow decodes the JPEGs.
+test-camera: $(B)/host/tt7d
+	uv run --no-project --quiet $(MQTT_TEST_DEPS) --with pillow==12.3.0 python tt7d/test_camera_e2e.py --daemon $(B)/host/tt7d
+
 $(B)/tt7cam: $(CAM_SRCS) $(CAM_HDRS)
 	@mkdir -p $(B)
 	$(CROSS_CC) $(CROSS_CFLAGS) $(CAM_INC) -o $@ $(CAM_SRCS) -lm
@@ -219,7 +225,7 @@ DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh
 # A system shellcheck if there is one, else the pinned PyPI build through uv.
 SHELLCHECK := $(shell command -v shellcheck 2>/dev/null || echo "uvx --from shellcheck-py==0.11.0.1 shellcheck")
 
-check: test-host test-e2e test-mqtt test-input test-cam $(IMAGE)
+check: test-host test-e2e test-mqtt test-input test-camera test-cam $(IMAGE)
 	python3 scripts/check-image.py --image $(IMAGE) --stock $(STOCK_BOOT) --pubkey $(SSH_PUBKEY)
 	@for s in $(SHELL_SCRIPTS); do bash -n $$s || exit 1; done; echo "  ok   bash -n: $(SHELL_SCRIPTS)"
 	@for s in $(DEVICE_SCRIPTS); do sh -n $$s || exit 1; done; echo "  ok   sh -n: $(DEVICE_SCRIPTS)"

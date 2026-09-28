@@ -103,6 +103,8 @@ class Daemon:
              "--data-dir", self.data, "--sysfs-root", self.sysfs,
              "--proc-root", PROC_FIXTURE, "--log-file", self.log_path, "--input-dir", self.input_dir,
              "--reboot-cmd", "touch " + shlex.quote(self.reboot_marker),
+             # Never the host's own /dev/video0 (test_camera_e2e.py overrides this).
+             "--camera-dev", os.path.join(os.path.dirname(self.data), "no-video0"),
              "--request-timeout-ms", str(TIMEOUT_MS)] + self.extra_args,
             stdout=log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 15
@@ -194,7 +196,9 @@ def test_info_and_empty_state(d):
     caps = info["capabilities"]
     assert caps["touch"] == {"available": True, "device": "gslX680"}, caps["touch"]
     assert caps["ethernet"] == {"available": False, "interface": None}, caps["ethernet"]
-    assert caps["camera"]["available"] is None
+    # The fixture has a video0 in sysfs, but the daemon's --camera-dev does not exist, and the camera is off.
+    assert caps["camera"]["available"] is False and caps["camera"]["enabled"] is False, caps["camera"]
+    assert caps["camera"]["video4linux_devices"] == ["video0"], caps["camera"]
     assert os.stat(os.path.join(d.data, "token")).st_mode & 0o777 == 0o600
 
     state = jbody(*d.request("GET", "/api/v1/state")[::2], 200)
