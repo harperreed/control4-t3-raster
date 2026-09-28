@@ -1,0 +1,17 @@
+lodepng: PNG decoder (single file) vendored for tt7d.
+
+Source:   https://github.com/lvandeve/lodepng
+Commit:   ed6fe5825c6a4fbb7f58ab35a4231c7543cd452a (repo HEAD on 2026-09-27)
+Version:  LODEPNG_VERSION_STRING "20260119"
+License:  zlib (LICENSE, copied unmodified from the same commit)
+Fetched:  curl -sSfL https://raw.githubusercontent.com/lvandeve/lodepng/<commit>/<file>
+
+sha256 (files are byte-identical to upstream; nothing is modified):
+d98e1f40d303c1038a096ebf93b413a565a91cf2c72b9d2fa5c625c4279c3cb6  lodepng.cpp
+23c27abb06883ed98184d16d0b20771b526dca1e8e13236c2397316769c0dc8b  lodepng.h
+bdafa318b8e637d600ca1b60545e894881977a16a16b74809c95e805701621e3  LICENSE
+
+Build: compiled as C with `-x c` (upstream documents renaming lodepng.cpp to
+lodepng.c for C; `-x c` does the same without touching the file) and
+-DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP
+-DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS. See the top-level Makefile.
