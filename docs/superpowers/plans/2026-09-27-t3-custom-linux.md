@@ -54,6 +54,7 @@ Architecture per those files: `boot.img` = stock kernel + our gzipped cpio ramdi
 - Dev loop: `sim/` headless renderer on the PC → scp the binary to `/data` → restart the app.
 
 ## Log
+- 2026-09-28: M3 input built on branch tt7d-m3-input (host-tested only, not on the panel): gslX680/rk29-keypad by capability, touch down/move/up in logical coords with frame_id over WebSocket GET /api/v1/events (token by header or ?token=), buttons also to MQTT event/button, panel Input section, tools/events.py. make check green.
 - 2026-09-27: Camera capture PROVEN on panel with tt7cam (cam-spike). Next for camera: snapshot endpoint in tt7d + presence (tt7cam motion logic), camera off by default.
 - 2026-09-27 queue after MQTT merge: (1) M3 touch/buttons WebSocket, (2) fallback clock + NTP, (3) web update of tt7d bundle. Camera spike running in parallel (cam-spike worktree).
 - 2026-09-27: M4 panel on device: /, /hardware, /logs (kernel log via klogctl works), auth 401 without token. Rollback: /data/tt7/bin/tt7d.bak.
