@@ -260,7 +260,8 @@ $(B)/server/tt7-server: FORCE
 
 server-check: $(B)/server/tt7-server $(B)/host/tt7d
 	cd server && $(GO) vet ./... && $(GO) test ./...
-	python3 server/test_server_e2e.py --daemon $(B)/host/tt7d --server $(B)/server/tt7-server --chrome $(CHROME)
+	uv run --no-project --quiet --with pillow==12.3.0 python server/test_server_e2e.py --daemon $(B)/host/tt7d \
+		--server $(B)/server/tt7-server --chrome $(CHROME)
 
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
                  scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \
