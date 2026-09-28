@@ -1,4 +1,4 @@
-// ABOUTME: Keeps server/screens.example.toml valid: loads it with a fake HOME holding its token files and Chrome.
+// ABOUTME: Keeps server/screens.example.toml and screens.docker.example.toml valid, with fake token files and Chrome.
 // ABOUTME: The real ~/.config/tt7 tokens are never read.
 package config
 
@@ -32,5 +32,37 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 	if c.ChromePath != chrome || c.Listen != "127.0.0.1:7788" {
 		t.Errorf("chrome %q listen %q", c.ChromePath, c.Listen)
+	}
+}
+
+// The Docker example is loaded where compose puts it: a config directory with a tokens/ directory.
+func TestDockerExampleConfigLoads(t *testing.T) {
+	text, err := os.ReadFile("../../screens.docker.example.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, "tokens"), 0o700)
+	for _, f := range []string{"admin.token", "tabletop.token", "wall.token"} {
+		if err := os.WriteFile(filepath.Join(dir, "tokens", f), []byte("tok-"+f+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(dir, "screens.toml")
+	if err := os.WriteFile(path, text, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Listen != "0.0.0.0:7788" || c.AdminToken != "tok-admin.token" || c.ChromePath != "" {
+		t.Errorf("listen %q admin token %q chrome %q", c.Listen, c.AdminToken, c.ChromePath)
+	}
+	if len(c.Screens) != 2 || c.Screens[0].Token != "tok-tabletop.token" || c.Screens[1].Token != "tok-wall.token" {
+		t.Errorf("screens %+v", c.Screens)
+	}
+	if err := SetURL(path, "wall", "http://192.168.200.8:5050/other"); err != nil { // its url lines are rewritable
+		t.Fatal(err)
 	}
 }

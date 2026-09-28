@@ -681,6 +681,10 @@ region_max_fraction = 0
                 assert s["last_frame_id"] == d.frame_id(), (s, d.frame_id())
                 assert re.fullmatch(r"\d{4}-\d\d-\d\dT[\d:.]+Z", s["last_push_at"]), s
 
+            steps.append("5e. tt7-server -healthcheck (the Docker HEALTHCHECK) exits 0 against the running server")
+            hc = subprocess.run([server_bin, "-config", config, "-healthcheck"], capture_output=True, timeout=20)
+            assert hc.returncode == 0, f"-healthcheck exited {hc.returncode}: {hc.stderr!r}"
+
             steps.append("5c. preview.png is byte-identical to the frame the panel holds")
             for name, d in (("a", a), ("b", b)):
                 status, png = http_json(admin_port, "GET", f"/api/screens/{name}/preview.png")
@@ -801,6 +805,8 @@ region_max_fraction = 0
             assert pids, "no Chrome processes under the server"
             rc = server.stop()
             assert rc == 0, f"tt7-server exited {rc}"
+            hc = subprocess.run([server_bin, "-config", config, "-healthcheck"], capture_output=True, timeout=20)
+            assert hc.returncode == 1, f"-healthcheck with the server stopped exited {hc.returncode}"
             left = [p for p in pids if os.path.exists(f"/proc/{p}") and "chrome" in open(f"/proc/{p}/cmdline").read()]
             assert not left, f"Chrome processes left after shutdown: {left}"
             wait_for("both panels on the fallback clock", lambda: a.fallback() and b.fallback(),

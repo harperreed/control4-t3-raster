@@ -25,12 +25,21 @@ import (
 func main() {
 	configPath := flag.String("config", "screens.toml", "the screens.toml to run (server/screens.example.toml documents it)")
 	debug := flag.Bool("debug", false, "also log every pushed frame")
+	health := flag.Bool("healthcheck", false, "don't run: ask the running server's admin API (at the config's listen address,\n"+
+		"with its admin token) whether it answers, and exit 0 if so, 1 if not (the Docker HEALTHCHECK)")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: tt7-server [-config screens.toml] [-debug]\n\n"+
+		fmt.Fprintf(os.Stderr, "usage: tt7-server [-config screens.toml] [-debug | -healthcheck]\n\n"+
 			"Shows each [[screen]]'s url on its tt7 panel and turns touches into clicks.\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if *health {
+		if err := healthcheck(*configPath); err != nil {
+			fmt.Fprintln(os.Stderr, "tt7-server unhealthy:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	level := slog.LevelInfo
 	if *debug {
 		level = slog.LevelDebug
@@ -40,6 +49,14 @@ func main() {
 		log.Error("tt7-server stopped", "err", err)
 		os.Exit(1)
 	}
+}
+
+func healthcheck(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	return admin.Probe(cfg.Listen, cfg.AdminToken, 5*time.Second)
 }
 
 func run(configPath string, log *slog.Logger) error {

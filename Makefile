@@ -62,7 +62,7 @@ CAM_UNITS := kabi yuv sentinel motion jpeg
 # Pinned Pillow decodes tt7cam's JPEG in the host end-to-end test.
 CAM_PILLOW := uv run --quiet --no-project --with pillow==12.3.0 python3
 
-.PHONY: all image busybox dropbear wifi tt7d cam bundle test-host test-e2e test-mqtt test-input test-camera test-cam test-update server server-check check clean FORCE
+.PHONY: all image busybox dropbear wifi tt7d cam bundle test-host test-e2e test-mqtt test-input test-camera test-cam test-update server server-check server-docker-check check clean FORCE
 .DELETE_ON_ERROR:
 
 all: image
@@ -263,6 +263,25 @@ server-check: $(B)/server/tt7-server $(B)/host/tt7d
 	uv run --no-project --quiet --with pillow==12.3.0 python server/test_server_e2e.py --daemon $(B)/host/tt7d \
 		--server $(B)/server/tt7-server --chrome $(CHROME)
 
+# Static checks of the Docker packaging (server/Dockerfile, server/compose.yaml). Neither needs a Docker
+# daemon: `docker compose config` only parses and resolves the file, and hadolint is a static binary,
+# fetched once into build/tools and checked against the sha256 GitHub lists for the v2.15.1 asset.
+HADOLINT_VERSION := 2.15.1
+HADOLINT_SHA256  := c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+HADOLINT         := $(B)/tools/hadolint-$(HADOLINT_VERSION)
+
+$(HADOLINT):
+	@mkdir -p $(@D)
+	curl -fsSL -o $@.tmp https://github.com/hadolint/hadolint/releases/download/v$(HADOLINT_VERSION)/hadolint-linux-x86_64
+	echo "$(HADOLINT_SHA256)  $@.tmp" | sha256sum -c --quiet
+	chmod +x $@.tmp
+	mv $@.tmp $@
+
+server-docker-check: $(HADOLINT)
+	docker compose -f server/compose.yaml config --quiet
+	$(HADOLINT) server/Dockerfile
+	@echo "  ok   server docker: compose config, hadolint"
+
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
                  scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \
                  scripts/build-wpa.sh scripts/wifi-setup.sh scripts/test-wifi-setup.sh \
@@ -271,7 +290,7 @@ DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh
 # A system shellcheck if there is one, else the pinned PyPI build through uv.
 SHELLCHECK := $(shell command -v shellcheck 2>/dev/null || echo "uvx --from shellcheck-py==0.11.0.1 shellcheck")
 
-check: test-host test-e2e test-mqtt test-input test-camera test-cam test-update server-check $(IMAGE)
+check: test-host test-e2e test-mqtt test-input test-camera test-cam test-update server-check server-docker-check $(IMAGE)
 	python3 scripts/check-image.py --image $(IMAGE) --stock $(STOCK_BOOT) --pubkey $(SSH_PUBKEY)
 	@for s in $(SHELL_SCRIPTS); do bash -n $$s || exit 1; done; echo "  ok   bash -n: $(SHELL_SCRIPTS)"
 	@for s in $(DEVICE_SCRIPTS); do sh -n $$s || exit 1; done; echo "  ok   sh -n: $(DEVICE_SCRIPTS)"
