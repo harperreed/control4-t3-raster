@@ -1,8 +1,8 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: M0 kernel-side dump PAUSED (battery 22%, USB resets every 30s-3min under load). Resume: `scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27 system` once docked on its power adapter
-- Next: M0 wrap-up (compare kernel dump vs loader dump, docs/hardware-inventory.md, recovery doc); then tt7d M1/M2 (PNG frame over HTTP)
+- Step: watchdog image 00235b6f… deployed (boot #4); 5 min idle = no false remedies, no USB resets. M0 dump PAUSED at system chunk 8/16 (battery)
+- Next: when docked on its power adapter: resume `scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27 system`, then cache/userdata/user; verify the watchdog fixes a real stall (usb-watchdog.log). Then docs/hardware-inventory.md + recovery doc (closes M0), then tt7d M1/M2
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
 - Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
