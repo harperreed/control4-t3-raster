@@ -27,7 +27,8 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 BOOT_LBA=40960                  # 0xa000, mtdparts 0x00006000@0x0000a000(boot)
 BOOT_BYTES=12582912             # 0x6000 sectors * 512 = 0x00c00000
 DD_BS=65536                     # MMKeypad's block size; 192 blocks = BOOT_BYTES
-STOCK_DIR="$root/backup/tt7-stock-2026-09-27"
+# Per-unit stock backup (boot + parameter.txt). TT7_STOCK_DIR selects another unit's, e.g. backup/wall-000fff80e822-2026-09-28.
+STOCK_DIR="${TT7_STOCK_DIR:-$root/backup/tt7-stock-2026-09-27}"
 STOCK_BOOT="$STOCK_DIR/03_boot.bin"
 READBACK_TRIES=3
 NET_DEV=/dev/mtdblock2
