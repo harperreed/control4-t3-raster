@@ -307,7 +307,8 @@ plus the test pattern PNG, into `build/gen/tt7d_assets.c` at build time
 (about 41 KB in all). It polls `/state` every 2 s and redraws the preview
 from `/frame/image?v=<frame id>:<accepted>` only when the frame changes.
 
-Sections: Overview (preview, frame, age, brightness, power, battery as an
+Sections: Overview (preview, frame, age, fallback clock state and NTP sync,
+brightness, power, battery as an
 estimate, uptime, per-interface IPs, online badge), Display (preview,
 resolution, native format and stride, rotation, brightness slider, wake,
 blank, test pattern), Input (once unlocked: the live event stream, newest

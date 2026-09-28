@@ -180,12 +180,30 @@ function networkRows(net) {
   return rows;
 }
 
+// The fallback clock (SPEC 41.1): whether it is on screen, and why.
+function fallbackText(f) {
+  if (!f) return null;
+  if (f.active) {
+    const why = { no_frame_since_boot: "no frame since boot", server_timeout: "server went quiet" }[f.reason] || f.reason;
+    return `on screen (${why})`;
+  }
+  if (!f.timeout_s) return "disabled";
+  return `standing by: shows after ${duration(f.timeout_s)} without a frame or heartbeat`;
+}
+
+function clockSyncText(c) {
+  if (!c) return null;
+  return `${c.synced ? "synced by NTP" : "not synced yet"}, ${c.format}, ${c.timezone}`;
+}
+
 function renderState(state) {
   const d = state.display;
   const [timeText, timeCls] = clockText(state.time);
   fillList($("overview-list"), [
     ["Frame", d.frame_id || (d.frame_age_s === null ? "none" : "restored (id unknown)")],
     ["Frame age", duration(d.frame_age_s) || "no frame"],
+    ["Fallback clock", fallbackText(state.fallback)],
+    ["Clock", clockSyncText(state.clock)],
     ["Display", d.on === null ? null : d.on ? "on" : "blank"],
     ["Brightness", brightnessText(d.brightness)],
     ["Power", powerText(state.power)],
