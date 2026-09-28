@@ -1,8 +1,8 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: panel runs main's tt7d (rotation 270, touch/WS, fallback clock, NTP, MQTT live on 192.168.23.123). Now: camera integration (branch tt7d-camera) and web firmware update (branch tt7d-web-update), parallel worktrees
-- Next: merge camera + web update, deploy, test camera on device (snapshot, presence). Deferred: finish the kernel-side M0 dump (system chunk 8/16 on), recovery doc
+- Step: both units on main 89be49a. Tabletop tt7-4009b5 (192.168.23.197): image + web-update release 89be49a, confirmed; MQTT up. Wall 7" tt7-942093 (192.168.23.198): flashed via Loader then USB, Wi-Fi via /data/tt7/modules override (rotted /system rkwifi.oob.ko)
+- Next: camera test on the tabletop (enable, snapshot, presence); wall unit: rotation check, MQTT, weak Wi-Fi (3 s RTT); unknown key_59
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
 - Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
