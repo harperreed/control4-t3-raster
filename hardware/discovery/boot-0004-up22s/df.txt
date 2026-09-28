@@ -1,0 +1,7 @@
+$ df -h
+Filesystem                Size      Used Available Use% Mounted on
+devtmpfs                426.3M         0    426.3M   0% /dev
+/dev/mtdblock6            2.5G    984.8M      1.5G  39% /data
+/dev/mtdblock6            2.5G    984.8M      1.5G  39% /etc/dropbear
+/dev/mtdblock9         1007.9M    641.4M    366.5M  64% /system
+[exit 0]

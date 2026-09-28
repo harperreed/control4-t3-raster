@@ -1,0 +1,7 @@
+$ cat /proc/modules
+wlan 460804 0 - Live 0xbf07e000
+rk29_ipp 9957 0 - Live 0xbf078000 (C)
+mali 152212 0 - Live 0xbf041000
+ump 27958 1 mali, Live 0xbf034000
+rk30xxnand_ko 164259 0 - Live 0xbf000000
+[exit 0]

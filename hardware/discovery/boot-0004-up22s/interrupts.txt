@@ -1,0 +1,46 @@
+$ cat /proc/interrupts
+           CPU0       CPU1       CPU2       CPU3       
+ 32:          0          0          0          0       GIC  rk29-pl330.1
+ 33:          0          0          0          0       GIC  rk29-pl330.1
+ 34:          0          0          0          0       GIC  rk29-pl330.2
+ 35:          0          0          0          0       GIC  rk29-pl330.2
+ 38:          0          0          0          0       GIC  bvalid
+ 39:          0          0          0          0       GIC  Mali_PP0, Mali_PP1, Mali_PP2, Mali_PP3
+ 40:          0          0          0          0       GIC  Mali_GP_MMU, Mali_PP0_MMU, Mali_PP1_MMU, Mali_PP2_MMU, Mali_PP3_MMU
+ 41:          0          0          0          0       GIC  vepu
+ 42:          0          0          0          0       GIC  vdpu
+ 43:          0          0          0          0       GIC  rk3066b-camera
+ 44:          0          0          0          0       GIC  Mali_GP
+ 45:       2427          0          0          0       GIC  rk30-lcdc.0
+ 47:          0          0          0          0       GIC  rk29-ipp
+ 48:         99          0          0          0       GIC  dwc_otg, dwc_otg_hcd:usb1, dwc_otg_pcd
+ 49:          0          0          0          0       GIC  dwc_otg, host20_hcd:usb2
+ 56:        584          0          0          0       GIC  rk29_sdmmc.1
+ 58:        246          0          0          0       GIC  rk30-adc
+ 59:        840          0          0          0       GIC  nandc
+ 72:          0          0          0          0       GIC  rk30_i2c.0
+ 73:        684          0          0          0       GIC  rk30_i2c.1
+ 74:       1680          0          0          0       GIC  rk30_i2c.2
+ 75:          6          0          0          0       GIC  rk30_i2c.3
+ 76:        921          0          0          0       GIC  rk_timer0
+ 77:          0        613          0          0       GIC  rk_timer1
+ 84:       1584          0          0          0       GIC  rk30_i2c.4
+ 91:          0          0        659          0       GIC  rk_timer2
+ 92:          0          0          0        494       GIC  rk_timer3
+ 95:          0          0          0          0       GIC  rga
+112:          0          0          0          0       GIC  debug-signal
+164:          0          0          0          0      GPIO  play
+170:          0          0          0          0      GPIO  ac_charge_irq
+173:          0          0          0          0      GPIO  rtc_hym8563
+207:          6          0          0          0      GPIO  gslX680
+279:          0          0          0          0      GPIO  ap6330_wake_host_irq
+FIQ:              fiq_glue
+IPI0:          0          0          0          0  Timer broadcast interrupts
+IPI1:        407        235        375        205  Rescheduling interrupts
+IPI2:          1          7          7          6  Function call interrupts
+IPI3:          0          0          0          0  Single function call interrupts
+IPI4:          0          0          0          0  CPU stop interrupts
+IPI5:          0          0          0          0  CPU backtrace
+LOC:          0          0          0          0  Local timer interrupts
+Err:          0
+[exit 0]

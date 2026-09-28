@@ -1,0 +1,2 @@
+$ cat /sys/class/rkwifi/chip
+OOB_RK903[exit 0]

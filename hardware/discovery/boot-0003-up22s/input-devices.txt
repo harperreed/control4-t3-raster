@@ -1,0 +1,23 @@
+$ cat /proc/bus/input/devices
+I: Bus=0019 Vendor=0001 Product=0001 Version=0100
+N: Name="rk29-keypad"
+P: Phys=gpio-keys/input0
+S: Sysfs=/devices/platform/rk29-keypad/input/input0
+U: Uniq=
+H: Handlers=event0 
+B: PROP=0
+B: EV=3
+B: KEY=8000 1c0000 0 0 0
+
+I: Bus=0018 Vendor=0000 Product=0000 Version=0000
+N: Name="gslX680"
+P: Phys=
+S: Sysfs=/devices/platform/rk30_i2c.2/i2c-2/2-0040/input/input1
+U: Uniq=
+H: Handlers=event1 
+B: PROP=2
+B: EV=10000b
+B: KEY=0
+B: ABS=2658000 0
+
+[exit 0]

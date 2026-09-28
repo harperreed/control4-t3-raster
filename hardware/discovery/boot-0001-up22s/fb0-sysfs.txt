@@ -1,0 +1,74 @@
+== /sys/class/graphics/fb0/bits_per_pixel
+16
+== /sys/class/graphics/fb0/blank
+== /sys/class/graphics/fb0/console
+== /sys/class/graphics/fb0/cursor
+== /sys/class/graphics/fb0/dev
+29:0
+== /sys/class/graphics/fb0/disp_info
+win0:enabled
+xvir:400
+xact:800
+yact:1280
+xdsp:800
+ydsp:1280
+x_st:74
+y_st:18
+x_scale:1.0
+y_scale:1.0
+format:RGB565
+YRGB buffer addr:0x97c00000
+CBR buffer addr:0x00000000
+
+win1:disabled
+xvir:320
+xdsp:320
+ydsp:240
+x_st:10
+y_st:10
+format:ARGB888
+YRGB buffer addr:0x00000000
+overlay:win1 on the top of win0
+
+== /sys/class/graphics/fb0/dsp_lut
+== /sys/class/graphics/fb0/dual_mode
+1
+== /sys/class/graphics/fb0/enable
+disabled
+== /sys/class/graphics/fb0/fps
+fps:56
+== /sys/class/graphics/fb0/map
+fb0:win0
+fb1:win1
+fb2:win2
+== /sys/class/graphics/fb0/mode
+== /sys/class/graphics/fb0/modes
+U:800x1280p-0
+== /sys/class/graphics/fb0/name
+fb0
+== /sys/class/graphics/fb0/overlay
+win1 on the top of win0
+== /sys/class/graphics/fb0/pan
+0,0
+== /sys/class/graphics/fb0/phys_addr
+0x97c00000-----0xc00000
+== /sys/class/graphics/fb0/rotate
+0
+== /sys/class/graphics/fb0/screen_info
+xres:800
+yres:1280
+fps:56
+== /sys/class/graphics/fb0/state
+0
+== /sys/class/graphics/fb0/stride
+1600
+== /sys/class/graphics/fb0/uevent
+MAJOR=29
+MINOR=0
+DEVNAME=fb0
+== /sys/class/graphics/fb0/virt_addr
+0xe0000000-----0xc00000
+== /sys/class/graphics/fb0/virtual_size
+800,1280
+== /sys/class/graphics/fb0/vsync
+22918045213

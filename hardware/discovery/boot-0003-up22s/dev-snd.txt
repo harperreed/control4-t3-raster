@@ -1,0 +1,12 @@
+$ ls -la /dev/snd
+total 0
+drwxr-xr-x    2 root     root           180 Jan  1  1970 .
+drwxr-xr-x    8 root     root          2240 Jan  1 12:51 ..
+crw-rw----    1 root     root      116,   0 Jan  1  1970 controlC0
+crw-rw----    1 root     root      116,   4 Jan  1  1970 hwC0D0
+crw-rw----    1 root     root      116,  24 Jan  1  1970 pcmC0D0c
+crw-rw----    1 root     root      116,  16 Jan  1  1970 pcmC0D0p
+crw-rw----    1 root     root      116,  25 Jan  1  1970 pcmC0D1c
+crw-rw----    1 root     root      116,  17 Jan  1  1970 pcmC0D1p
+crw-rw----    1 root     root      116,  33 Jan  1  1970 timer
+[exit 0]

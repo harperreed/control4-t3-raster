@@ -1,0 +1,36 @@
+== /sys/class/input/input0/modalias
+input:b0019v0001p0001e0100-e0,1,k72,73,74,8F,ramlsfw
+== /sys/class/input/input0/name
+rk29-keypad
+== /sys/class/input/input0/phys
+gpio-keys/input0
+== /sys/class/input/input0/properties
+0
+== /sys/class/input/input0/uevent
+PRODUCT=19/1/1/100
+NAME="rk29-keypad"
+PHYS="gpio-keys/input0"
+PROP=0
+EV=3
+KEY=8000 1c0000 0 0 0
+MODALIAS=input:b0019v0001p0001e0100-e0,1,k72,73,74,8F,ramlsfw
+== /sys/class/input/input0/uniq
+
+== /sys/class/input/input1/modalias
+input:b0018v0000p0000e0000-e0,1,3,14,kra2F,30,32,35,36,39,mlsfw
+== /sys/class/input/input1/name
+gslX680
+== /sys/class/input/input1/phys
+
+== /sys/class/input/input1/properties
+2
+== /sys/class/input/input1/uevent
+PRODUCT=18/0/0/0
+NAME="gslX680"
+PROP=2
+EV=10000b
+KEY=0
+ABS=2658000 0
+MODALIAS=input:b0018v0000p0000e0000-e0,1,3,14,kra2F,30,32,35,36,39,mlsfw
+== /sys/class/input/input1/uniq
+

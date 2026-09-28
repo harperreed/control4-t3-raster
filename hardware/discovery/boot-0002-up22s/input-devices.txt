@@ -1,0 +1,20 @@
+/dev/input/event0
+  name    "rk29-keypad"
+  phys    "gpio-keys/input0"
+  uniq    ""
+  id      bus 0x0019 vendor 0x0001 product 0x0001 version 0x0100
+  types   SYN(0) KEY(1)
+  keys    114(0x72) 115(0x73) 116(0x74) 143(0x8f)
+/dev/input/event1
+  name    "gslX680"
+  phys    ""
+  uniq    ""
+  id      bus 0x0018 vendor 0x0000 product 0x0000 version 0x0000
+  types   SYN(0) KEY(1) ABS(3) REP(20)
+  keys   
+  abs 0x2f  value 0 min 0 max 10 fuzz 0 flat 0 resolution 0
+  abs 0x30  value 0 min 0 max 255 fuzz 0 flat 0 resolution 0
+  abs 0x32  value 0 min 0 max 200 fuzz 0 flat 0 resolution 0
+  abs 0x35  value 0 min 0 max 1280 fuzz 0 flat 0 resolution 0
+  abs 0x36  value 0 min 0 max 800 fuzz 0 flat 0 resolution 0
+  abs 0x39  value 0 min 0 max 65535 fuzz 0 flat 0 resolution 0

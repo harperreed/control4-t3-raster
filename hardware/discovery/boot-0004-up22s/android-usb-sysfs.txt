@@ -1,0 +1,22 @@
+== /sys/class/android_usb/android0/bDeviceClass
+239
+== /sys/class/android_usb/android0/bDeviceProtocol
+1
+== /sys/class/android_usb/android0/bDeviceSubClass
+2
+== /sys/class/android_usb/android0/bcdDevice
+0222
+== /sys/class/android_usb/android0/enable
+1
+== /sys/class/android_usb/android0/functions
+rndis,acm
+== /sys/class/android_usb/android0/iManufacturer
+Android== /sys/class/android_usb/android0/iProduct
+Android== /sys/class/android_usb/android0/iSerial
+0123456789ABCDEF== /sys/class/android_usb/android0/idProduct
+0003
+== /sys/class/android_usb/android0/idVendor
+2207
+== /sys/class/android_usb/android0/state
+CONFIGURED
+== /sys/class/android_usb/android0/uevent

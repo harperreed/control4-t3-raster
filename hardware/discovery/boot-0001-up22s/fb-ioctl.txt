@@ -1,0 +1,25 @@
+$ tt7probe fbinfo
+FBIOGET_FSCREENINFO
+  id           fb0
+  smem_start   0x97c00000
+  smem_len     12582912
+  type         0
+  visual       2
+  xpanstep     1  ypanstep 1  ywrapstep 0
+  line_length  1600
+  accel        0
+FBIOGET_VSCREENINFO
+  xres         800  yres 1280
+  virtual      800 x 1280
+  offset       0, 0
+  bits/pixel   16  grayscale 1342382080  nonstd 4
+  red          offset 11 length 5 msb_right 0
+  green        offset 5 length 6 msb_right 0
+  blue         offset 0 length 5 msb_right 0
+  transp       offset 0 length 0 msb_right 0
+  activate     0
+  size_mm      202 x 152
+  pixclock_ps  15151
+  margins      left 64 right 20 upper 8 lower 13
+  sync_len     h 10 v 10  sync 0x0  vmode 0x0  rotate 0
+[exit 0]

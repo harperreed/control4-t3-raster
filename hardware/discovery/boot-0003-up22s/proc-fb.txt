@@ -1,0 +1,4 @@
+$ cat /proc/fb
+0 fb0
+1 fb1
+[exit 0]

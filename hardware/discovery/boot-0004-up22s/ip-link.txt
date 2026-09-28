@@ -1,0 +1,14 @@
+$ ip link
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 16436 qdisc noqueue state UNKNOWN 
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+2: sit0: <NOARP> mtu 1480 qdisc noop state DOWN 
+    link/sit 0.0.0.0 brd 0.0.0.0
+3: ip6tnl0: <NOARP> mtu 1452 qdisc noop state DOWN 
+    link/tunnel6 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00 brd 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00
+4: rndis0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP qlen 1000
+    link/ether 72:06:f4:d8:1c:60 brd ff:ff:ff:ff:ff:ff
+5: p2p0: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN qlen 1000
+    link/ether 00:90:4c:33:22:11 brd ff:ff:ff:ff:ff:ff
+6: wlan0: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN qlen 1000
+    link/ether 00:90:4c:11:22:33 brd ff:ff:ff:ff:ff:ff
+[exit 0]

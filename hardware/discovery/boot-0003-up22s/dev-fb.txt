@@ -1,0 +1,4 @@
+$ ls -la /dev/fb0 /dev/graphics
+ls: /dev/graphics: No such file or directory
+crw-rw----    1 root     root       29,   0 Jan  1  1970 /dev/fb0
+[exit 1]

@@ -1,0 +1,4 @@
+$ sh -c ls -la /dev/video*
+crw-rw----    1 root     root       81,   0 Jan  1 13:16 /dev/video0
+crw-rw----    1 root     root       10,  41 Jan  1  1970 /dev/video_state
+[exit 0]

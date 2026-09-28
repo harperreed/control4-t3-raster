@@ -1,0 +1,14 @@
+$ cat /proc/mtd
+dev:    size   erasesize  name
+mtd0: 00400000 00004000 "misc"
+mtd1: 00c00000 00004000 "kernel"
+mtd2: 00c00000 00004000 "boot"
+mtd3: 02000000 00004000 "recovery"
+mtd4: 04000000 00004000 "backup"
+mtd5: 40000000 00004000 "cache"
+mtd6: a0000000 00004000 "userdata"
+mtd7: 00400000 00004000 "metadata"
+mtd8: 00400000 00004000 "kpanic"
+mtd9: 40000000 00004000 "system"
+mtd10: ab800000 00004000 "user"
+[exit 0]

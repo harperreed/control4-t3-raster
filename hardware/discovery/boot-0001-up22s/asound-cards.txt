@@ -1,0 +1,13 @@
+$ cat /proc/asound/cards /proc/asound/devices /proc/asound/pcm
+ 0 [RK29RT3261     ]: RK29_RT3261 - RK29_RT3261
+                      RK29_RT3261
+  0: [ 0]   : control
+  4: [ 0- 0]: hardware dependent
+ 16: [ 0- 0]: digital audio playback
+ 17: [ 0- 1]: digital audio playback
+ 24: [ 0- 0]: digital audio capture
+ 25: [ 0- 1]: digital audio capture
+ 33:        : timer
+00-00: RT3261 PCM rt3261-aif1-0 :  : playback 1 : capture 1
+00-01: RT3261 PCM rt3261-aif2-1 :  : playback 1 : capture 1
+[exit 0]

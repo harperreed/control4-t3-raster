@@ -1,0 +1,11 @@
+$ fbset
+
+mode "800x1280-56"
+	# D: 66.002 MHz, H: 73.828 kHz, V: 56.314 Hz
+	geometry 800 1280 800 1280 16
+	timings 15151 64 20 8 13 10 10
+	accel false
+	rgba 5/11,6/5,5/0,0/0
+endmode
+
+[exit 0]

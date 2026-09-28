@@ -1,0 +1,15 @@
+$ cat /proc/partitions
+major minor  #blocks  name
+
+  31        0       4096 mtdblock0
+  31        1      12288 mtdblock1
+  31        2      12288 mtdblock2
+  31        3      32768 mtdblock3
+  31        4      65536 mtdblock4
+  31        5    1048576 mtdblock5
+  31        6    2621440 mtdblock6
+  31        7       4096 mtdblock7
+  31        8       4096 mtdblock8
+  31        9    1048576 mtdblock9
+  31       10    2809856 mtdblock10
+[exit 0]

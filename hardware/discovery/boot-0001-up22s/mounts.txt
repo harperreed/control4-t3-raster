@@ -1,0 +1,10 @@
+$ cat /proc/mounts
+rootfs / rootfs rw 0 0
+proc /proc proc rw,relatime 0 0
+sysfs /sys sysfs rw,relatime 0 0
+devtmpfs /dev devtmpfs rw,relatime,size=436764k,nr_inodes=109191,mode=755 0 0
+devpts /dev/pts devpts rw,relatime,mode=600 0 0
+/dev/mtdblock6 /data ext4 rw,noatime,nodiratime,user_xattr,barrier=1,data=ordered 0 0
+/dev/mtdblock6 /etc/dropbear ext4 rw,noatime,nodiratime,user_xattr,barrier=1,data=ordered 0 0
+/dev/mtdblock9 /system ext4 ro,noatime,nodiratime,user_xattr,barrier=1,data=ordered 0 0
+[exit 0]

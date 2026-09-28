@@ -1,0 +1,11 @@
+== /sys/class/backlight/rk28_bl/actual_brightness
+67
+== /sys/class/backlight/rk28_bl/bl_power
+0
+== /sys/class/backlight/rk28_bl/brightness
+127
+== /sys/class/backlight/rk28_bl/max_brightness
+255
+== /sys/class/backlight/rk28_bl/type
+raw
+== /sys/class/backlight/rk28_bl/uevent

@@ -1,0 +1,7 @@
+$ ls -la /dev/input
+total 0
+drwxr-xr-x    2 root     root            80 Jan  1  1970 .
+drwxr-xr-x    8 root     root          2240 Jan  1 13:17 ..
+crw-rw----    1 root     root       13,  64 Jan  1  1970 event0
+crw-rw----    1 root     root       13,  65 Jan  1  1970 event1
+[exit 0]

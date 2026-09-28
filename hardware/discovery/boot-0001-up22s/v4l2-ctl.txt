@@ -1,0 +1,1 @@
+not in image: see dev-video.txt and sys-class.txt (video4linux)

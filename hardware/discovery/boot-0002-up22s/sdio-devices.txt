@@ -1,0 +1,4 @@
+$ sh -c for d in /sys/bus/sdio/devices/*; do echo "$d $(cat "$d/vendor" "$d/device" 2>/dev/null | tr "\n" " ")"; done
+/sys/bus/sdio/devices/mmc0:0001:1 0x02d0 0x4330 
+/sys/bus/sdio/devices/mmc0:0001:2 0x02d0 0x4330 
+[exit 0]

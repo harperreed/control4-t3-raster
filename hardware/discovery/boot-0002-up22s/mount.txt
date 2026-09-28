@@ -1,0 +1,10 @@
+$ mount
+rootfs on / type rootfs (rw)
+proc on /proc type proc (rw,relatime)
+sysfs on /sys type sysfs (rw,relatime)
+devtmpfs on /dev type devtmpfs (rw,relatime,size=436764k,nr_inodes=109191,mode=755)
+devpts on /dev/pts type devpts (rw,relatime,mode=600)
+/dev/mtdblock6 on /data type ext4 (rw,noatime,nodiratime,user_xattr,barrier=1,data=ordered)
+/dev/mtdblock6 on /etc/dropbear type ext4 (rw,noatime,nodiratime,user_xattr,barrier=1,data=ordered)
+/dev/mtdblock9 on /system type ext4 (ro,noatime,nodiratime,user_xattr,barrier=1,data=ordered)
+[exit 0]

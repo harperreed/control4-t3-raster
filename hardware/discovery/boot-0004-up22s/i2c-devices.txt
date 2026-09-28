@@ -1,0 +1,12 @@
+$ sh -c for d in /sys/bus/i2c/devices/*; do echo "$d $(cat "$d/name" 2>/dev/null)"; done
+/sys/bus/i2c/devices/1-0051 rtc_hym8563
+/sys/bus/i2c/devices/1-005a act8846
+/sys/bus/i2c/devices/2-0040 gslX680
+/sys/bus/i2c/devices/3-002a nt99141
+/sys/bus/i2c/devices/4-001c rt3261
+/sys/bus/i2c/devices/i2c-0 rk30_i2c
+/sys/bus/i2c/devices/i2c-1 rk30_i2c
+/sys/bus/i2c/devices/i2c-2 rk30_i2c
+/sys/bus/i2c/devices/i2c-3 rk30_i2c
+/sys/bus/i2c/devices/i2c-4 rk30_i2c
+[exit 0]
