@@ -6,6 +6,7 @@
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
 - Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
+- Approved: "lets deploy it" (2026-09-27): flash image 00235b6f… (TX-stall watchdog) over Wi-Fi
 - Open: Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
 - Approved: "a + c" (2026-09-27): dashboard + control panel content, now served by the server side of SPEC.md
