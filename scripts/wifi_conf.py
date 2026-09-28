@@ -60,7 +60,8 @@ def pmk(passphrase, ssid_bytes):
     return hashlib.pbkdf2_hmac("sha1", passphrase.encode("ascii"), ssid_bytes, 4096, 32)
 
 
-def make_conf(ssid, psk):
+def network_lines(ssid, psk):
+    """The ssid= and psk= lines for one network (validated and quoted safely)."""
     ssid_bytes = ssid.encode("utf-8")
     if not 1 <= len(ssid_bytes) <= 32:
         raise ConfError(f"SSID must be 1..32 bytes (got {len(ssid_bytes)})")
@@ -79,29 +80,50 @@ def make_conf(ssid, psk):
         psk_line = f"psk={pmk(psk, ssid_bytes).hex()}"
     else:
         psk_line = f'psk="{psk}"'
+    return ssid_line, psk_line
 
+
+def make_conf(networks):
+    """networks: [(ssid, psk), ...] in preference order. With more than one,
+    each block gets a priority (the first listed is highest), so the panel
+    joins the preferred network when several are in range."""
+    if not networks:
+        raise ConfError("no networks")
+    seen = set()
+    blocks = []
+    for i, (ssid, psk) in enumerate(networks):
+        if ssid in seen:
+            raise ConfError(f"SSID listed twice (network {i + 1})")
+        seen.add(ssid)
+        ssid_line, psk_line = network_lines(ssid, psk)
+        priority = f"\tpriority={len(networks) - i}\n" if len(networks) > 1 else ""
+        blocks.append("network={\n"
+                      f"\t{ssid_line}\n"
+                      "\tscan_ssid=1\n"
+                      "\tkey_mgmt=WPA-PSK\n"
+                      f"\t{psk_line}\n"
+                      f"{priority}"
+                      "}\n")
     return ("ctrl_interface=/var/run/wpa_supplicant\n"
             "update_config=0\n"
-            "\n"
-            "network={\n"
-            f"\t{ssid_line}\n"
-            "\tscan_ssid=1\n"
-            "\tkey_mgmt=WPA-PSK\n"
-            f"\t{psk_line}\n"
-            "}\n")
+            "\n" + "\n".join(blocks))
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] in ("-h", "--help"):
-        print("usage: wifi_conf.py <env-file>   (writes wpa_supplicant.conf to stdout)", file=sys.stderr)
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print("usage: wifi_conf.py <env-file>...   (one file per network, preferred first;"
+              " writes wpa_supplicant.conf to stdout)", file=sys.stderr)
         sys.exit(2)
+    networks = []
+    path = None
     try:
-        with open(sys.argv[1], encoding="utf-8") as f:
-            ssid, psk = parse_env(f.read())
-        sys.stdout.write(make_conf(ssid, psk))
+        for path in sys.argv[1:]:
+            with open(path, encoding="utf-8") as f:
+                networks.append(parse_env(f.read()))
+        sys.stdout.write(make_conf(networks))
     except (OSError, UnicodeDecodeError, ConfError) as e:
         # Never include the PSK in an error.
-        print(f"wifi_conf: {sys.argv[1]}: {e}", file=sys.stderr)
+        print(f"wifi_conf: {path}: {e}", file=sys.stderr)
         sys.exit(1)
 
 

@@ -99,5 +99,29 @@ else
   bad "default is ~/.config/tt7/wifi.env"
 fi
 
+# Several networks: one --env per network; the first listed gets the highest priority.
+envfile net_a $'SSID=HomeNet\nPSK=correct horse battery\n'
+envfile net_b $'SSID=WorkNet\nPSK=another password\n'
+want=$(printf 'ctrl_interface=/var/run/wpa_supplicant\nupdate_config=0\n\nnetwork={\n\tssid="HomeNet"\n\tscan_ssid=1\n\tkey_mgmt=WPA-PSK\n\tpsk="correct horse battery"\n\tpriority=2\n}\n\nnetwork={\n\tssid="WorkNet"\n\tscan_ssid=1\n\tkey_mgmt=WPA-PSK\n\tpsk="another password"\n\tpriority=1\n}\n')
+if got=$(env -u TT7_WIFI_ENV "$setup" --env "$tmp/net_a" --env "$tmp/net_b" --print-conf-to-stdout 2> "$tmp/err") && [[ "$got" == "$want" ]]; then
+  ok "two --env files: two networks, first has the higher priority"
+else
+  bad "two --env files: two networks, first has the higher priority"; diff <(echo "$want") <(echo "$got") || true; cat "$tmp/err"
+fi
+envfile net_dup $'SSID=HomeNet\nPSK=some other secret\n'
+if env -u TT7_WIFI_ENV "$setup" --env "$tmp/net_a" --env "$tmp/net_dup" --print-conf-to-stdout > "$tmp/out" 2> "$tmp/err"; then
+  bad "the same SSID twice is refused (was accepted)"
+elif grep -qF -- "some other secret" "$tmp/out" "$tmp/err"; then
+  bad "the same SSID twice is refused (secret leaked)"
+else
+  ok "the same SSID twice is refused: $(head -1 "$tmp/err")"
+fi
+envfile net_open $'SSID=CafeNet\nPSK=cafepassword\n'; chmod 644 "$tmp/net_open"
+if env -u TT7_WIFI_ENV "$setup" --env "$tmp/net_a" --env "$tmp/net_open" --print-conf-to-stdout > /dev/null 2> "$tmp/err"; then
+  bad "a group-readable second env file is refused (was accepted)"
+else
+  ok "a group-readable second env file is refused"
+fi
+
 (( fails == 0 )) || { echo "test-wifi-setup: $fails check(s) FAILED"; exit 1; }
 echo "test-wifi-setup: all checks passed"
