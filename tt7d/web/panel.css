@@ -144,3 +144,6 @@ input[type="range"] { width: 100%; padding: 0; margin: 4px 0 12px; }
   pointer-events: none;
 }
 .touch-dot.up { opacity: 0.35; }
+/* Update: the upload progress bar and the file picker. */
+progress { display: block; width: 100%; height: 8px; margin-top: 8px; accent-color: var(--accent); }
+input[type="file"] { flex: 1 1 260px; min-width: 0; }

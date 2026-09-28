@@ -37,7 +37,7 @@ TT7D_LIB     := tt7d/json.c tt7d/http.c tt7d/render.c tt7d/sha256.c tt7d/ident.c
                 tt7d/bundle.c tt7d/sign.c
 TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/panel.c tt7d/events.c tt7d/fallback_screen.c \
                 tt7d/update.c tt7d/main.c
-TT7D_WEB     := tt7d/web/index.html tt7d/web/panel.css tt7d/web/panel.js
+TT7D_WEB     := tt7d/web/index.html tt7d/web/panel.css tt7d/web/panel.js tt7d/web/update.js
 TT7D_HDRS    := $(wildcard tt7d/*.h) probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h third_party/lodepng/lodepng.h \
                 third_party/stb/stb_truetype.h third_party/tweetnacl/tweetnacl.h third_party/tweetnacl/tweetnacl.c
 TT7D_INC     := -Itt7d -Iprobe -I$(FONT_DIR) -Ithird_party/lodepng -Ithird_party/stb -Ithird_party/tweetnacl
@@ -91,6 +91,7 @@ $(B)/gen/test-pattern.png: tools/make-test-frame.py $(FONT_DIR)/font8x8_basic.h
 $(TT7D_ASSETS_C): tt7d/embed.py $(TT7D_WEB) $(B)/gen/test-pattern.png $(TT7D_FONTS)
 	@mkdir -p $(B)/gen
 	python3 tt7d/embed.py $@ /=tt7d/web/index.html /panel.css=tt7d/web/panel.css /panel.js=tt7d/web/panel.js \
+		/update.js=tt7d/web/update.js \
 		test-pattern.png=$(B)/gen/test-pattern.png \
 		font-time.ttf=third_party/fonts/inter/InterDisplay-Light.ttf font-text.ttf=third_party/fonts/inter/Inter-Regular.ttf
 

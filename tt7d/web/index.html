@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- ABOUTME: tt7d's local control panel (SPEC 29-31): overview, display, input, hardware, system, logs, actions. -->
+<!-- ABOUTME: tt7d's local control panel (SPEC 29-31): overview, display, input, hardware, system, logs, update, actions. -->
 <!-- ABOUTME: Compiled into tt7d; the CSP allows only /panel.css and /panel.js, so nothing here is inline. -->
 <html lang="en">
 <head>
@@ -9,6 +9,7 @@
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/panel.css">
 <script src="/panel.js" defer></script>
+<script src="/update.js" defer></script>
 </head>
 <body>
 <header class="top">
@@ -23,6 +24,7 @@
     <a href="#hardware">Hardware</a>
     <a href="#system">System</a>
     <a href="#logs">Logs</a>
+    <a href="#update">Update</a>
     <a href="#actions">Actions</a>
   </nav>
 </header>
@@ -103,6 +105,25 @@
   <pre id="log-tt7d" class="log"></pre>
   <h3>Kernel</h3>
   <pre id="log-kernel" class="log"></pre>
+</section>
+
+<section id="update" class="card">
+  <h2>Update <button id="update-refresh" type="button" class="small">Refresh</button></h2>
+  <dl id="update-list" class="kv"></dl>
+  <h3>Install a bundle</h3>
+  <p class="muted">A tt7-bundle-*.tar from <code>make bundle</code>. The panel checks every file against the bundle's manifest (and its signature, if a key is set), installs it beside the running release and restarts into it. If the new release does not stay up, the panel goes back to the previous one by itself.</p>
+  <div class="auth-row">
+    <label for="update-file" class="sr">Bundle file</label>
+    <input id="update-file" type="file" accept=".tar,application/x-tar" data-needs-token>
+    <button id="update-upload" type="button" data-needs-token>Upload and install</button>
+  </div>
+  <progress id="update-progress" max="1" value="0" hidden></progress>
+  <p id="update-msg" class="msg" role="status"></p>
+  <div class="buttons">
+    <button id="update-rollback" type="button" class="danger" data-needs-token>Roll back</button>
+  </div>
+  <h3>History</h3>
+  <ol id="update-history" class="log input-log"></ol>
 </section>
 
 <section id="actions" class="card">
