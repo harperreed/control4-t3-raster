@@ -93,7 +93,7 @@ func TestNoTokenOnLoopback(t *testing.T) {
 func TestSetURLOnDisabledScreenSaves(t *testing.T) {
 	srv, path := setup(t, "")
 	status, doc := call(t, "PUT", srv.URL+"/api/screens/den/url", "", `{"url":"https://new.example/"}`)
-	if status != 200 || doc["url"] != "https://new.example/" {
+	if status != 202 || doc["url"] != "https://new.example/" {
 		t.Fatalf("%d %v", status, doc)
 	}
 	b, _ := os.ReadFile(path)

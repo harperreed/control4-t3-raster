@@ -100,28 +100,31 @@ func (a *Admin) setURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_url", err.Error())
 		return
 	}
+	// The screen takes the URL under the same lock as the file, so the last save is also the last URL.
 	a.saveMu.Lock()
 	err := config.SetURL(a.configPath, s.Name(), body.URL)
+	if err == nil {
+		s.SetURL(body.URL) // returns at once; the load runs in the background (url_status)
+	}
 	a.saveMu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "save_failed", err.Error())
 		return
 	}
-	// A page that fails to load is still the configured URL; the error shows in last_error.
-	s.SetURL(r.Context(), body.URL)
-	writeJSON(w, http.StatusOK, s.Status())
+	writeJSON(w, http.StatusAccepted, s.Status())
 }
 
+// reload loads the configured URL again, in the background.
 func (a *Admin) reload(w http.ResponseWriter, r *http.Request) {
 	s := a.find(w, r)
 	if s == nil {
 		return
 	}
-	if err := s.Reload(r.Context()); err != nil {
+	if err := s.Reload(); err != nil {
 		writeError(w, http.StatusConflict, "reload_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Status())
+	writeJSON(w, http.StatusAccepted, s.Status())
 }
 
 func (a *Admin) preview(w http.ResponseWriter, r *http.Request) {

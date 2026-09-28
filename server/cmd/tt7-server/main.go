@@ -70,7 +70,7 @@ func run(configPath string, log *slog.Logger) error {
 		if !sc.Enabled {
 			continue
 		}
-		tab, err := br.OpenTab(s.OnFrame)
+		tab, err := br.OpenTab(s.OnFrame, s.OnErrorPage)
 		if err != nil {
 			return fmt.Errorf("screen %q: %w", sc.Name, err)
 		}
