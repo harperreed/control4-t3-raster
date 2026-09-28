@@ -7,13 +7,16 @@
 # retried until the link is back, and re-running with the same label resumes where it stopped.
 # Mounted read-write partitions (userdata) can legitimately change between reads; their chunk mismatches
 # are reported as MOUNTED-RW rather than failures.
-# Usage: scripts/dump-via-ssh.sh <label>      -> backup/<label>/NN_<name>.bin, SHA256SUMS, dump.log
+# Usage: scripts/dump-via-ssh.sh <label> [partition...]   -> backup/<label>/NN_<name>.bin, SHA256SUMS, dump.log
+#        With partition names, only those are dumped (in /proc/mtd order); the rest can be resumed later.
 # Env:   TT7_HOST (default root@10.55.0.1), TT7_DUMP_PAUSE (seconds between chunks, default 0)
 
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-label="${1:-}"; [[ -n "$label" ]] || { echo "usage: $0 <label>" >&2; exit 2; }
+label="${1:-}"; [[ -n "$label" ]] || { echo "usage: $0 <label> [partition...]" >&2; exit 2; }
+shift
+only=" $* "
 host="${TT7_HOST:-root@10.55.0.1}"
 pause="${TT7_DUMP_PAUSE:-0}"
 out="$root/backup/$label"
@@ -42,6 +45,7 @@ dumped=0
 while read -r dev size _ name; do
   [[ "$dev" =~ ^mtd([0-9]+):$ ]] || continue
   n="${BASH_REMATCH[1]}"; name="${name//\"/}"; bytes=$((16#$size))
+  [[ "$only" == "  " || "$only" == *" $name "* ]] || continue
   file=$(printf '%02d_%s.bin' $((n + 1)) "$name")   # 00_ is the loader-only head region
   status="$out/$file.status"
   if [[ -f "$status" ]]; then echo "$name: already done ($(cat "$status"))"; dumped=$((dumped + 1)); continue; fi
@@ -78,12 +82,12 @@ while read -r dev size _ name; do
   dumped=$((dumped + 1))
 done < <(tail -n +2 "$out/proc-mtd.txt")
 
-expected=$(grep -c "^mtd" "$out/proc-mtd.txt")
+if [[ "$only" == "  " ]]; then expected=$(grep -c "^mtd" "$out/proc-mtd.txt"); else read -ra wanted <<< "$only"; expected=${#wanted[@]}; fi
 [[ "$dumped" -eq "$expected" ]] || { echo "INCOMPLETE: dumped $dumped of $expected partitions"; bad=1; }
 
 if (( bad == 0 )); then
   (cd "$out" && sha256sum ./*.bin > SHA256SUMS)
-  chmod a-w "$out"/*.bin
+  for s in "$out"/*.status; do chmod a-w "${s%.status}"; done
 fi
 echo "== done $(date -Is), exit $bad. $(du -sh "$out" | cut -f1) in $out"
 exit $bad
