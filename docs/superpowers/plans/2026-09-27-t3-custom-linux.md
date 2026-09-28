@@ -2,7 +2,7 @@
 
 ## Now
 - Step: both units on main 89be49a. Tabletop tt7-4009b5 (192.168.23.197): image + web-update release 89be49a, confirmed; MQTT up. Wall 7" tt7-942093 (192.168.23.198): flashed via Loader then USB, Wi-Fi via /data/tt7/modules override (rotted /system rkwifi.oob.ko)
-- Next: camera test on the tabletop (enable, snapshot, presence); wall unit: rotation check, MQTT, weak Wi-Fi (3 s RTT); unknown key_59
+- Next: fix 411 on bodyless POST; camera snapshot rotate option (tabletop camera is upside down); web-update bootstrap on the wall unit; unknown key_59 on the wall
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
 - Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
@@ -57,6 +57,7 @@ Architecture per those files: `boot.img` = stock kernel + our gzipped cpio ramdi
 - Dev loop: `sim/` headless renderer on the PC → scp the binary to `/data` → restart the app.
 
 ## Log
+- 2026-09-28: Camera PROVEN on the tabletop: snapshot 4.2 s; presence 2 fps sustained, True/False transitions, wakes a blanked display.
 - 2026-09-28: M3 input built on branch tt7d-m3-input (host-tested only, not on the panel): gslX680/rk29-keypad by capability, touch down/move/up in logical coords with frame_id over WebSocket GET /api/v1/events (token by header or ?token=), buttons also to MQTT event/button, panel Input section, tools/events.py. make check green.
 - 2026-09-27: Camera capture PROVEN on panel with tt7cam (cam-spike). Next for camera: snapshot endpoint in tt7d + presence (tt7cam motion logic), camera off by default.
 - 2026-09-27 queue after MQTT merge: (1) M3 touch/buttons WebSocket, (2) fallback clock + NTP, (3) web update of tt7d bundle. Camera spike running in parallel (cam-spike worktree).

@@ -159,3 +159,10 @@
 - `ssh … 'a && b && nohup reboot -f … &'` in one chained command did NOT reboot (the background reboot died with the session). Run the detached reboot as its own ssh call.
 - **Rotation 270 is upright on BOTH units** (tabletop and 7" in-wall; Doctor Biz, 2026-09-28), so there's no per-unit rotation config.
 - **Several Wi-Fi networks:** `scripts/wifi-setup.sh --env home.env --env work.env --start`, one file per network, first listed preferred (wpa_supplicant `priority`). The panel joins whichever is in range.
+
+## Camera in tt7d: PROVEN on the tabletop (2026-09-28)
+- Snapshot through `tt7d` works: 1280×720 JPEG in 4.2 s (30-frame exposure warm-up plus encode), clean sensor power-down, no leftover rk_camera_vb.
+- **Presence streaming works on this driver:** one session, a steady 2 frames/s, and 939+ frames scored with no stall. Present=True at score 18.3 and 15.0, back to False at 3.96. **Presence woke a blanked display** back to its previous brightness (127).
+- Docked, the camera sees mostly the **ceiling**, so a hand waved in front of the panel may not register. Covering or leaning over the lens does.
+- **The camera image is upside down on the docked tabletop** (sensor mounted 180° relative to the panel). Snapshots need a rotate option.
+- **tt7d bug:** a POST with no body and no Content-Length gets 411. Per RFC 7230 §3.3.3 that body is zero-length and should be accepted. Browsers send `Content-Length: 0`, so the control panel works; `curl -X POST` without `-d ''` hits it.
