@@ -4,6 +4,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -62,6 +63,29 @@ func TestSetURLKeepsFileMode(t *testing.T) {
 	st, _ := os.Stat(path)
 	if st.Mode().Perm() != 0o640 {
 		t.Errorf("mode %o after rewrite, want 640", st.Mode().Perm())
+	}
+}
+
+// In Docker the config's DIRECTORY is bind-mounted: rename(2) onto a single-file bind mount fails
+// (EBUSY), so the temp file must live next to screens.toml, not in $TMPDIR. A read-only directory
+// holding a writable screens.toml shows where the temp file goes: SetURL can only fail there.
+func TestSetURLWritesItsTempFileNextToTheConfig(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	path := fixture(t, good)
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	err := SetURL(path, "wall", "http://new/")
+	if err == nil || !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "mount the directory") {
+		t.Fatalf("error %v, want one about creating a temp file in %s", err, dir)
+	}
+	b, _ := os.ReadFile(path)
+	if string(b) != good {
+		t.Errorf("screens.toml changed after a failed save:\n%s", b)
 	}
 }
 

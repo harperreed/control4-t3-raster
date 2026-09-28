@@ -99,6 +99,148 @@ html, body { margin: 0; background: rgb(255, 0, 255); font: 120px sans-serif; }
 </style></head><body><p style="margin: 300px 0 0 500px">SECOND</p></body></html>"""
 
 
+LATE_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
+html, body { margin: 0; background: rgb(0, 255, 255); font: 120px sans-serif; }
+</style></head><body><p style="margin: 300px 0 0 500px">LATE</p></body></html>"""
+CYAN = (0, 255, 255)
+
+
+class HangingServer:
+    """Accepts connections and reads requests but never answers: a dashboard host that swallows requests."""
+
+    def __init__(self):
+        import socket
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(16)
+        self.port = self.sock.getsockname()[1]
+        self.requests = []  # request lines seen
+        self.conns = []
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            self.conns.append(conn)
+            threading.Thread(target=self._read, args=(conn,), daemon=True).start()
+
+    def _read(self, conn):
+        try:
+            data = conn.recv(4096)
+        except OSError:
+            return
+        if data:
+            self.requests.append(data.split(b"\r\n", 1)[0].decode("latin-1"))
+
+    def url(self, path):
+        return f"http://127.0.0.1:{self.port}{path}"
+
+    def stop(self):
+        self.sock.close()
+        for c in self.conns:
+            c.close()
+
+
+class LateServer:
+    """The dashboard that is down when the server first tries it: nothing listens on its port until start()."""
+
+    def __init__(self):
+        self.port = test_e2e.free_port()
+        self.httpd = None
+
+    def url(self, path):
+        return f"http://127.0.0.1:{self.port}{path}"
+
+    def start(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path != "/late":
+                    self.send_error(404)
+                    return
+                body = LATE_HTML.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def stop(self):
+        if self.httpd:
+            self.httpd.shutdown()
+
+
+def timed_json(port, method, path, doc=None):
+    """http_json, plus how long the reply took in seconds."""
+    t0 = time.monotonic()
+    status, body = http_json(port, method, path, doc)
+    return status, body, time.monotonic() - t0
+
+
+def unreachable_url_steps(steps, info, b, rot, admin_port, config):
+    """B's page URL goes to a host that hangs, then to one that is down and comes up later (SPEC bugs fixed in S3)."""
+    hang, late = HangingServer(), LateServer()
+    try:
+        fb_before, accepted_before = b.fb_bytes(), b.get("/api/v1/state")["frames"]["accepted"]
+
+        steps.append("8a. PUT url to a host that never answers returns at once (202, loading); B keeps its frame")
+        status, body, took = timed_json(admin_port, "PUT", "/api/screens/b/url", {"url": hang.url("/hang")})
+        doc = json.loads(body)
+        assert status == 202 and doc["url"] == hang.url("/hang") and doc["url_status"] == "loading", (status, doc)
+        assert took < 1.0, f"PUT url took {took:.2f} s"
+        info.append(f"PUT url to a hanging host: {took * 1000:.0f} ms")
+        wait_for("the hanging host to see the request", lambda: len(hang.requests) >= 1, timeout=10)
+
+        steps.append("8b. reload loads the CONFIGURED url (the hanging host sees a new request), at once")
+        seen = len(hang.requests)
+        status, body, took = timed_json(admin_port, "POST", "/api/screens/b/reload")
+        assert status == 202 and took < 1.0, (status, body, took)
+        wait_for("the reload's request at the hanging host", lambda: len(hang.requests) > seen, timeout=10)
+        assert all(r.startswith("GET /hang ") for r in hang.requests), hang.requests
+
+        steps.append("8c. PUT url to a host that is down: 202 at once, url_status failed with the net error, "
+                     "and no frame of Chrome's error page reaches the panel")
+        status, body, took = timed_json(admin_port, "PUT", "/api/screens/b/url", {"url": late.url("/late")})
+        assert status == 202 and took < 1.0, (status, body, took)
+        info.append(f"PUT url to a down host: {took * 1000:.0f} ms")
+        wait_for("url_status failed", lambda: screen_status(admin_port, "b")["url_status"] == "failed", timeout=10)
+        s_b = screen_status(admin_port, "b")
+        assert "ERR_CONNECTION_REFUSED" in (s_b["url_error"] or ""), s_b
+        time.sleep(1.5)  # time for an error-page frame to arrive, were it let through
+        assert b.fb_bytes() == fb_before, "B's framebuffer changed while its URL was failing"
+        assert b.get("/api/v1/state")["frames"]["accepted"] == accepted_before, "a frame went to B while failing"
+        with open(config) as f:
+            assert f'url = "{late.url("/late")}"' in f.read(), "the failing URL was not saved"
+
+        steps.append("8d. the down host comes up: B shows it by itself (retry with backoff), with no API call")
+        late.start()
+        t0 = time.monotonic()
+        wait_for("the late page (cyan) on B", lambda: b.pixel(*SAMPLE, rot) == rgb565(CYAN), timeout=30)
+        info.append(f"down host came up -> page on B: {time.monotonic() - t0:.1f} s (first retry is 5 s after the failure)")
+        s_b = screen_status(admin_port, "b")
+        assert s_b["url_status"] == "ok" and s_b["url_error"] is None, s_b
+
+        steps.append("8e. a URL whose server answers 404 fails too, and its error page is not pushed")
+        time.sleep(0.5)
+        fb_before, accepted_before = b.fb_bytes(), b.get("/api/v1/state")["frames"]["accepted"]
+        assert http_json(admin_port, "PUT", "/api/screens/b/url", {"url": late.url("/x")})[0] == 202
+        wait_for("url_status failed", lambda: screen_status(admin_port, "b")["url_status"] == "failed", timeout=10)
+        assert (screen_status(admin_port, "b")["url_error"] or "").startswith("HTTP 404"), screen_status(admin_port, "b")
+        time.sleep(1.5)
+        assert b.fb_bytes() == fb_before and b.get("/api/v1/state")["frames"]["accepted"] == accepted_before
+    finally:
+        hang.stop()
+        late.stop()
+
+
 def wait_for(what, cond, timeout=20.0, step=0.02):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -539,6 +681,10 @@ region_max_fraction = 0
                 assert s["last_frame_id"] == d.frame_id(), (s, d.frame_id())
                 assert re.fullmatch(r"\d{4}-\d\d-\d\dT[\d:.]+Z", s["last_push_at"]), s
 
+            steps.append("5e. tt7-server -healthcheck (the Docker HEALTHCHECK) exits 0 against the running server")
+            hc = subprocess.run([server_bin, "-config", config, "-healthcheck"], capture_output=True, timeout=20)
+            assert hc.returncode == 0, f"-healthcheck exited {hc.returncode}: {hc.stderr!r}"
+
             steps.append("5c. preview.png is byte-identical to the frame the panel holds")
             for name, d in (("a", a), ("b", b)):
                 status, png = http_json(admin_port, "GET", f"/api/screens/{name}/preview.png")
@@ -623,7 +769,7 @@ region_max_fraction = 0
             steps.append("5b. PUT url moves B to the second page (magenta on B's fb) and saves it to screens.toml")
             second = pages.url("/second")
             status, body = http_json(admin_port, "PUT", "/api/screens/b/url", {"url": second})
-            assert status == 200 and json.loads(body)["url"] == second, (status, body)
+            assert status == 202 and json.loads(body)["url"] == second, (status, body)
             wait_for("magenta on panel B", lambda: b.pixel(*SAMPLE, rot) == rgb565(MAGENTA), timeout=10)
             s_b = screen_status(admin_port, "b")
             assert s_b["last_update"] == "full", f"a navigation should be a full frame: {s_b}"
@@ -646,15 +792,21 @@ region_max_fraction = 0
             assert status == 400 and json.loads(body)["error"] == "invalid_url", body
             with open(config) as f:
                 assert f.read() == saved, "a refused URL changed screens.toml"
-            assert http_json(admin_port, "POST", "/api/screens/b/reload")[0] == 200
+            assert http_json(admin_port, "POST", "/api/screens/b/reload")[0] == 202
+            wait_for("B reloaded", lambda: screen_status(admin_port, "b")["url_status"] == "ok", timeout=10)
+            time.sleep(0.5)  # the reload's frame, if any, goes out before step 8 snapshots B
             status, body = http_json(admin_port, "GET", "/")
             assert status == 200 and b"tt7-server" in body
+
+            unreachable_url_steps(steps, info, b, rot, admin_port, config)
 
             steps.append("3b. SIGTERM: the server exits 0, Chrome goes, and both panels fall back to the clock")
             pids = server.descendants()
             assert pids, "no Chrome processes under the server"
             rc = server.stop()
             assert rc == 0, f"tt7-server exited {rc}"
+            hc = subprocess.run([server_bin, "-config", config, "-healthcheck"], capture_output=True, timeout=20)
+            assert hc.returncode == 1, f"-healthcheck with the server stopped exited {hc.returncode}"
             left = [p for p in pids if os.path.exists(f"/proc/{p}") and "chrome" in open(f"/proc/{p}/cmdline").read()]
             assert not left, f"Chrome processes left after shutdown: {left}"
             wait_for("both panels on the fallback clock", lambda: a.fallback() and b.fallback(),

@@ -1,0 +1,39 @@
+# ABOUTME: Docker Compose (v2) service for tt7-server: builds server/Dockerfile, mounts ./config (screens.toml,
+# ABOUTME: writable) and ./config/tokens (read-only), publishes the admin API on the host's loopback only.
+#
+# First-time setup and upgrades: server/README.md "Docker".
+
+name: tt7-server
+
+services:
+  tt7-server:
+    build:
+      context: .
+    image: tt7-server:local
+    # tt7-server exits 1 when Chrome dies (or on a bad config); this brings it back.
+    restart: unless-stopped
+    # Docker's init (tini) as PID 1: reaps Chrome's exited helper processes and forwards SIGTERM.
+    init: true
+    ports:
+      # The admin page and API. Loopback only; change the host side to reach it from the LAN.
+      - "127.0.0.1:${TT7_ADMIN_PORT:-7788}:7788"
+    volumes:
+      # The DIRECTORY, not the file: PUT .../url replaces screens.toml with a temp file plus
+      # rename(2), and a rename onto a single-file bind mount fails with EBUSY.
+      - ./config:/config
+      # Panel and admin tokens, mode 600, owned by the container user (uid/gid 1000 by default).
+      - ./config/tokens:/config/tokens:ro
+    # Measured: Chrome with 2 idle 1280x800 tabs is about 450 MiB PSS; real dashboards weigh more.
+    mem_limit: 1g
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      # A local build: there is no registry image for Watchtower to pull.
+      com.centurylinklabs.watchtower.enable: "false"

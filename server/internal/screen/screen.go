@@ -28,8 +28,10 @@ import (
 
 // Page is the browser tab a screen shows (browser.Tab).
 type Page interface {
+	// Navigate loads url; it fails on a network error or an HTTP error status.
 	Navigate(ctx context.Context, url string) error
-	Reload(ctx context.Context) error
+	// Capture returns a screenshot of the tab as a 1280x800 PNG.
+	Capture(ctx context.Context) ([]byte, error)
 	Mouse(ctx context.Context, typ input.MouseType, x, y float64) error
 }
 
@@ -56,6 +58,8 @@ type Status struct {
 	FramesPushed    int64      `json:"frames_pushed"`
 	LastError       *string    `json:"last_error"`
 	LastErrorAt     *time.Time `json:"last_error_at"`
+	URLStatus       *string    `json:"url_status"` // loading, ok or failed (nav.go); null for a disabled screen
+	URLError        *string    `json:"url_error"`  // why the last load of url failed; null once one works
 
 	// Frame traffic: every accepted update is a full frame (PUT) or regions (PATCH).
 	BytesSent       int64    `json:"bytes_sent"` // request bodies the panel accepted
@@ -96,6 +100,15 @@ type Screen struct {
 	seq      uint64
 	mapper   TouchMapper
 	touchLog bool // the current touch was already logged as being on an old frame
+
+	// Navigation (nav.go). Frames reach the panel only while showing: the configured URL loaded.
+	showing                  bool
+	frameSeq                 uint64             // captures taken; a screenshot yields to a newer one
+	navKick                  chan struct{}      // load the configured URL now
+	navGen                   uint64             // bumped by SetURL and Reload; a load of an older one is dropped
+	navReset                 bool               // the next load starts the retry backoff over
+	navCancel                context.CancelFunc // abandons the load under way
+	navRetryMin, navRetryMax time.Duration
 }
 
 // New prepares a screen. Attach a Page and call Run to drive it.
@@ -109,6 +122,10 @@ func New(cfg config.Screen, maxFPS int, log *slog.Logger) *Screen {
 		repush: make(chan struct{}, 1),
 		hurry:  make(chan struct{}, 1),
 		st:     Status{Name: cfg.Name, Host: cfg.Host, URL: cfg.URL, Enabled: cfg.Enabled},
+
+		navKick:     make(chan struct{}, 1),
+		navRetryMin: navRetryMin,
+		navRetryMax: navRetryMax,
 	}
 }
 
@@ -117,13 +134,24 @@ func (s *Screen) Name() string { return s.cfg.Name }
 // Attach gives the screen its browser tab.
 func (s *Screen) Attach(p Page) { s.page = p }
 
-// OnFrame takes a PNG from the tab's screencast. It never blocks.
-func (s *Screen) OnFrame(png []byte) {
+// OnFrame takes a PNG from the tab's screencast. It never blocks. Frames painted while
+// the configured URL is not loaded (loading, or Chrome's error page) are dropped, so the
+// panel keeps its last good frame.
+func (s *Screen) OnFrame(png []byte) { s.take(png, nil) }
+
+// take keeps png as the newest capture while the page is showing. With ifSeq, only if no
+// other capture came in since *ifSeq was read.
+func (s *Screen) take(png []byte, ifSeq *uint64) {
 	if w, h, ok := pngSize(png); !ok || w != logicalW || h != logicalH {
 		s.log.Warn("dropping a capture that is not a 1280x800 PNG", "width", w, "height", h)
 		return
 	}
 	s.mu.Lock()
+	if !s.showing || (ifSeq != nil && *ifSeq != s.frameSeq) {
+		s.mu.Unlock()
+		return
+	}
+	s.frameSeq++
 	s.capture = png
 	s.urgent = s.urgent || s.bypass.Capture(time.Now())
 	urgent := s.urgent
@@ -164,38 +192,6 @@ func (s *Screen) Preview() []byte {
 	return s.shown
 }
 
-// SetURL points the screen at a new page (navigating if the screen runs).
-func (s *Screen) SetURL(ctx context.Context, url string) error {
-	s.mu.Lock()
-	s.st.URL = url
-	s.mu.Unlock()
-	if s.page == nil {
-		return nil
-	}
-	return s.navigate(ctx, url)
-}
-
-// Reload reloads the screen's page.
-func (s *Screen) Reload(ctx context.Context) error {
-	if s.page == nil {
-		return fmt.Errorf("screen %q is disabled", s.cfg.Name)
-	}
-	err := s.page.Reload(ctx)
-	if err != nil {
-		s.fail("reload", err)
-	}
-	return err
-}
-
-func (s *Screen) navigate(ctx context.Context, url string) error {
-	s.log.Info("navigating", "url", url)
-	err := s.page.Navigate(ctx, url)
-	if err != nil {
-		s.fail("navigate", err)
-	}
-	return err
-}
-
 // fail records an error for the admin API and logs it.
 func (s *Screen) fail(what string, err error) {
 	msg := what + ": " + err.Error()
@@ -215,7 +211,7 @@ func (s *Screen) Run(ctx context.Context) {
 	wg.Go(func() { s.pushLoop(ctx) })
 	wg.Go(func() { s.heartbeatLoop(ctx) })
 	wg.Go(func() { s.eventLoop(ctx) })
-	s.navigate(ctx, s.Status().URL)
+	wg.Go(func() { s.navLoop(ctx) })
 	wg.Wait()
 }
 

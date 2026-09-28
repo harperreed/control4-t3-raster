@@ -1,0 +1,7 @@
+# ABOUTME: Docker build context filter for server/: the image needs only go.mod, go.sum, cmd/ and internal/.
+# ABOUTME: config/ holds the live screens.toml and the panel/admin tokens, so it must never reach the builder.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/

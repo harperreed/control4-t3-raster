@@ -2,3 +2,4 @@ backup/
 third_party/src/
 build/
 .claude/
+server/config/

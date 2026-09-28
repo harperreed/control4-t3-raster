@@ -3,11 +3,13 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // BurntSushi/toml (like the other Go TOML libraries) drops comments when it
@@ -125,8 +127,8 @@ func writeAtomic(path string, data []byte) error {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
+	if err != nil { // in Docker: a single-file bind mount leaves the directory root's
+		return fmt.Errorf("%w (the directory of %s must be writable; in Docker, mount the directory, not the file)", err, path)
 	}
 	defer os.Remove(tmp.Name()) // a no-op once the rename happened
 	if _, err := tmp.Write(data); err != nil {
@@ -145,6 +147,9 @@ func writeAtomic(path string, data []byte) error {
 		return err
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
+		if errors.Is(err, syscall.EBUSY) || errors.Is(err, syscall.EXDEV) { // rename onto a bind-mounted file
+			return fmt.Errorf("%w (is %s bind-mounted on its own? mount its directory instead)", err, path)
+		}
 		return err
 	}
 	if d, err := os.Open(filepath.Dir(path)); err == nil {

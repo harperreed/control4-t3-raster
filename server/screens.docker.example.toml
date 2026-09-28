@@ -1,0 +1,30 @@
+# screens.toml for tt7-server in Docker (server/compose.yaml). Copy it to
+#   server/config/screens.toml
+# and put one token file per panel in server/config/tokens/ (server/README.md "Docker").
+# Inside the container this file is /config/screens.toml. Relative paths are relative
+# to it, so "tokens/tabletop.token" is /config/tokens/tabletop.token (mounted read-only).
+# server/screens.example.toml documents every key.
+
+# The container listens on all its interfaces; compose publishes the port on the
+# host's 127.0.0.1 only. Any non-loopback listen requires admin_token_file.
+listen = "0.0.0.0:7788"
+admin_token_file = "tokens/admin.token"
+
+# No chrome_path: tt7-server finds the image's Debian Chromium on PATH (/usr/bin/chromium).
+# --no-sandbox: Docker's default seccomp profile blocks the user namespaces Chrome's
+# sandbox needs (server/README.md "Docker"); the container is the boundary instead.
+chrome_flags = ["--no-sandbox"]
+
+max_fps = 5
+
+[[screen]]
+name = "tabletop"
+host = "192.168.200.200"
+token_file = "tokens/tabletop.token"
+url = "http://192.168.200.8:5050/nook"   # PUT /api/screens/tabletop/url rewrites this line
+
+[[screen]]
+name = "wall"
+host = "192.168.200.178"
+token_file = "tokens/wall.token"
+url = "http://192.168.200.8:5050/living_room"

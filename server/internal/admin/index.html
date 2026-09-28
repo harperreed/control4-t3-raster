@@ -99,7 +99,8 @@ async function refresh() {
     state.className = "state " + (s.enabled && s.reachable ? "ok" : "bad");
     c.node.querySelector(".info").textContent = "device " + (s.device_id || "?") + " · events " +
       (s.events_connected ? "on" : "off") + " · frames pushed " + s.frames_pushed +
-      " · last push " + (s.last_push_at || "never");
+      " · last push " + (s.last_push_at || "never") +
+      (s.url_status ? " · page " + s.url_status + (s.url_error ? " (" + s.url_error + ")" : "") : "");
     c.node.querySelector(".err").textContent = s.last_error ? s.last_error + " (" + s.last_error_at + ")" : "";
     if (!c.editing) c.url.value = s.url;
     preview(s, c);

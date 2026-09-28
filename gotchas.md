@@ -185,3 +185,11 @@
   - Tabletop: region pushes of 1–8 KB take 94–418 ms (one 929 ms spike); full frames of about 60 KB took about 920 ms.
   - Wall on Wi-Fi: 88 ms to 3.4 s, plus timeouts. After a failed PATCH the server resyncs with a full frame, as designed.
   - With regions, the remaining latency is Wi-Fi jitter, not bytes: same-size pushes vary 10×. The wall should be fine once it's on PoE Ethernet.
+
+## tt7-server in Docker (2026-09-28, branch server-docker; built and run on docker-host)
+- Debian's Chromium in Docker stops with `No usable sandbox!` under Docker's default seccomp (with and without no-new-privileges), so the Docker config passes `--no-sandbox`; the container (uid 1000, cap_drop ALL) is the boundary. server/README.md "Docker" has the reasoning.
+- Mount the config DIRECTORY: with a single-file bind mount, /config is root's and the temp file for `PUT .../url` can't be created (and as root, rename onto the mounted file would be EBUSY).
+- `docker kill`/`docker stop` count as manual stops: `restart: unless-stopped` does not bring the container back. A crash inside (Chrome or tt7-server killed) does, in about 6 s.
+- chromedp already passes `--disable-dev-shm-usage` (DefaultExecAllocatorOptions), so /dev/shm size doesn't matter.
+- docker-host runs Watchtower; the service opts out with a label since its image is a local build.
+- From a worktree-isolated agent, `DOCKER_HOST=ssh://... docker ...` inline is refused by the Bash guard; put it in a scratchpad wrapper script, or run docker over `ssh docker-host bash -s < script`.

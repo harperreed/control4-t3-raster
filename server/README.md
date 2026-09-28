@@ -30,13 +30,174 @@ Admin API (JSON; errors are `{"error": "<code>", "message": ...}`):
 | Endpoint | Does |
 |---|---|
 | `GET /` | The admin page: status, URL, reload, and preview for each screen |
-| `GET /api/screens` | `{"screens": [...]}`: `name`, `host`, `url`, `enabled`, `reachable`, `events_connected`, `device_id`, `last_push_at`, `last_frame_id`, `frames_pushed`, `last_error`, `last_error_at` (null when unknown); frame traffic: `bytes_sent` (bodies the panel accepted), `full_frames`, `region_frames`, `base_mismatches` (PATCHes the panel refused with 409), `last_update` (`full`/`regions`), `last_region_count`, `last_push_bytes`, `last_push_ms` (the last accepted request, send to reply) |
-| `PUT /api/screens/{name}/url` | Body `{"url": "https://..."}`. Saves it to screens.toml, then navigates. 400 `invalid_url`, 404 `no_such_screen`, 500 `save_failed` |
-| `POST /api/screens/{name}/reload` | Reloads the page (409 `reload_failed` on a disabled screen) |
+| `GET /api/screens` | `{"screens": [...]}`: `name`, `host`, `url`, `enabled`, `reachable`, `events_connected`, `device_id`, `last_push_at`, `last_frame_id`, `frames_pushed`, `last_error`, `last_error_at` (null when unknown); the page: `url_status` (`loading`, `ok` or `failed`; null for a disabled screen), `url_error` (why the last load of `url` failed; null once one works); frame traffic: `bytes_sent` (bodies the panel accepted), `full_frames`, `region_frames`, `base_mismatches` (PATCHes the panel refused with 409), `last_update` (`full`/`regions`), `last_region_count`, `last_push_bytes`, `last_push_ms` (the last accepted request, send to reply) |
+| `PUT /api/screens/{name}/url` | Body `{"url": "https://..."}`. Saves it to screens.toml and answers 202 with the screen's status at once; the page loads in the background (watch `url_status`). 400 `invalid_url`, 404 `no_such_screen`, 500 `save_failed` |
+| `POST /api/screens/{name}/reload` | Loads the configured `url` again, whatever the tab shows now; 202 at once (409 `reload_failed` on a disabled screen) |
 | `GET /api/screens/{name}/preview.png` | The last frame the panel accepted (404 `no_frame`) |
 
 The API needs `Authorization: Bearer <admin token>` when `admin_token_file` is
 set, and the config requires one whenever `listen` is not a loopback address.
+
+`tt7-server -config screens.toml -healthcheck` does not run the server: it asks
+the running one (at the config's `listen`, with its admin token) for
+`GET /api/screens` and exits 0 if that answers 200, else 1. The Docker
+HEALTHCHECK uses it, so the image needs no curl.
+
+## Docker
+
+`server/Dockerfile` builds the server static (Go 1.26.6, `CGO_ENABLED=0`) and
+runs it as uid/gid 1000 next to Debian trixie's Chromium, with Noto (core,
+color emoji, CJK) and Liberation fonts. `server/compose.yaml` runs it.
+Verified on docker-host (192.168.200.8, Docker 27.2.1, Compose v2.29.2) on
+2026-09-28 with a panel-less config; see "Verified in Docker" below.
+
+Layout next to `server/compose.yaml` (the directory `server/config/` is
+git-ignored):
+
+```text
+server/config/                  mounted read-write at /config (the directory, see below)
+  screens.toml                  from screens.docker.example.toml; PUT .../url rewrites it
+  tokens/                       mounted read-only at /config/tokens; mode 700
+    admin.token                 the admin API token (any random string), mode 600
+    tabletop.token              each panel's /data/tt7/tt7d/token, mode 600
+    wall.token
+```
+
+The container runs as **uid 1000, gid 1000** (build args `TT7_UID`/`TT7_GID`
+change it). The token files and `screens.toml` must be readable by that uid
+and the `config/` directory writable by it; tt7-server refuses a token file
+that group or others can read. On docker-host uid 1000 is harper, so files
+harper creates just work.
+
+**Mount the directory, not the file.** `PUT .../url` writes a temp file next
+to `screens.toml` and renames it over the old one (atomic). A single-file bind
+mount breaks that: Docker creates `/config` owned by root, so the temp file
+can't be made (seen in Docker: `open /config/.screens.toml.NNN: permission
+denied`), and even as root, rename(2) onto a bind-mounted file fails with
+EBUSY. Both errors say to mount the directory.
+
+First time, on the machine that runs it:
+
+```sh
+cd server
+mkdir -p config/tokens && chmod 700 config/tokens
+cp screens.docker.example.toml config/screens.toml      # then set host/url per screen
+head -c 24 /dev/urandom | base64 > config/tokens/admin.token
+cp /path/to/tabletop-token config/tokens/tabletop.token  # each panel's token
+chmod 600 config/tokens/*.token
+docker compose up -d --build
+docker compose ps                                        # STATUS shows (healthy) after ~10 s
+curl -s -H "Authorization: Bearer $(cat config/tokens/admin.token)" http://127.0.0.1:7788/api/screens | jq .
+```
+
+- **Logs** go to stdout/stderr, kept by Docker's json-file driver (10 MB × 3
+  files): `docker compose logs -f`.
+- **Changing a URL:** the admin page at http://127.0.0.1:7788/ (it asks for
+  the admin token), or `curl -X PUT -H "Authorization: Bearer $(cat
+  config/tokens/admin.token)" -d '{"url":"http://..."}'
+  http://127.0.0.1:7788/api/screens/wall/url`. It lands in
+  `config/screens.toml` at once. Editing `screens.toml` by hand needs
+  `docker compose restart`.
+- **Upgrading** (new server code, or a Chromium security update):
+  `git pull && docker compose build --pull && docker compose up -d`. The
+  image pins its base images by digest but installs Debian's current
+  Chromium at build time (Debian drops superseded chromium packages from
+  its archive, so a pinned version would stop building); `--no-cache`
+  forces a fresh Chromium even when nothing else changed. Bump the digests
+  in the Dockerfile to move to a newer Debian point release.
+- **Admin port:** published on the host's `127.0.0.1:7788` only
+  (`TT7_ADMIN_PORT=7799 docker compose up -d` picks another host port). To
+  reach it from the LAN, change `127.0.0.1` in `compose.yaml`; the admin
+  token guards the API either way.
+- **Restarts:** `restart: unless-stopped`. tt7-server exits 1 when Chrome
+  dies, and Docker starts it again. A `docker kill` or `docker stop` counts
+  as a manual stop, so Docker leaves it stopped until `docker compose up -d`
+  or `docker start` (Docker's restart-policy rules).
+- **Watchtower** runs on docker-host; the service carries
+  `com.centurylinklabs.watchtower.enable=false` because its image is a local
+  build with nothing to pull.
+
+Choices, and why:
+
+- **Debian's `chromium`, not `chromedp/headless-shell`.** headless-shell is
+  made for chromedp and smaller (about 150 MB compressed on Docker Hub
+  against this image's 955 MB on disk), but on 2026-09-28 its newest tag was
+  151.0.7922.109 (Docker Hub, 2026-08-11) and its Containerfile
+  (github.com/chromedp/docker-headless-shell) installs no fonts, so fonts
+  would be added anyway. Debian trixie's `chromium` is
+  154.0.8037.57-1~deb13u1 (packages.debian.org), the same Chrome version the
+  e2e test runs on the dev box, it is the full browser in new headless mode
+  as tested, and trixie-security keeps it patched. The cost is disk: in the
+  built image Chromium is 376 MB, Noto CJK 90 MB, the other Noto fonts
+  54 MB, Liberation 4 MB. CJK is the one to drop (`fonts-noto-cjk` in the
+  Dockerfile) if 90 MB matters more than Chinese/Japanese/Korean text.
+- **`--no-sandbox`** (in `screens.docker.example.toml`). Tried in Docker
+  without it: Chrome stops with `No usable sandbox!`, both with the compose
+  settings and without `no-new-privileges`. Docker's default seccomp profile
+  blocks the user namespaces Chrome's sandbox needs, and Debian's setuid
+  helper (`chromium-sandbox`) is a separate package that would need
+  capabilities this container drops. The headless-shell README's way to keep
+  the sandbox is a custom seccomp profile (jessfraz's `chrome.json`); that
+  was not tried, and docker-host also sets
+  `kernel.apparmor_restrict_unprivileged_userns = 1`, which may block it
+  anyway (unverified). So the container is the boundary: non-root,
+  `cap_drop: ALL`, `no-new-privileges`, and it loads only your dashboards.
+- **No `shm_size`.** chromedp already starts Chrome with
+  `--disable-dev-shm-usage` (chromedp v0.16.0 allocate.go,
+  `DefaultExecAllocatorOptions`), so Chrome keeps its shared memory in /tmp
+  and Docker's 64 MB /dev/shm is never the limit.
+- **`init: true`**: Docker's tini as PID 1 reaps Chrome's exited helpers (the
+  headless-shell README warns of zombie processes) and passes SIGTERM on.
+- **Bridge network, not `network_mode: host`.** The default bridge reaches
+  the dashboards: from inside the container, `GET http://192.168.200.8:5050/`
+  answered `HTTP/1.0 302 Found`. Outbound traffic to the panels leaves
+  through the host's routing and NAT the same way (not tried against the
+  panels: the test kept away from them). Host networking would also work
+  and would drop the NAT, but it would expose the admin port on every host
+  interface instead of loopback only; use it only if a panel ever has to
+  reach the server first (tt7d never does: the server dials the panels).
+- **`mem_limit: 1g`**: Chrome with 2 idle tabs measured about 450 MiB PSS on
+  the dev box; the panel-less container used 202 MiB. Real dashboards weigh
+  more, so about twice the measured figure. If Chrome hits the limit, the
+  kernel kills it, the server exits, and Docker restarts it.
+
+### Verified in Docker (docker-host, 2026-09-28)
+
+With `-p tt7-server-ci`, host port 7799, and a config whose one screen is
+192.0.2.1 (TEST-NET-1, never answers) showing a `file://` page; no panel or
+broker was contacted, and everything was removed afterwards.
+
+- The image builds (955 MB); the build context is 133 kB (`.dockerignore`
+  keeps `config/` and its tokens out).
+- The container runs as `uid=1000(tt7)`; `docker top` shows docker-init,
+  tt7-server and Chromium, all as uid 1000.
+- Chromium starts headless (`tt7-server running`, then `page loaded` for the
+  `file://` page 65 ms later, with no warning from the post-load screenshot).
+  A test page with Latin, Greek, Cyrillic, Chinese, Japanese, Korean and
+  color emoji rendered every glyph with the image's fonts.
+- Healthy about 8 s after start; the admin API answers 401 without the
+  token and the screen list with it; the port is published on 127.0.0.1
+  only.
+- `PUT .../url` answered 202 in 15 ms; `config/screens.toml` got a new inode
+  (temp file + rename in the mounted directory), kept its comment, and no
+  temp file was left. After the restarts below the server loaded the saved
+  URL.
+- `kill -9` of Chrome's browser process: tt7-server logged `Chrome exited;
+  stopping`, exited 1, and Docker restarted it (healthy again in about 6 s).
+  `kill -9` of tt7-server: the same.
+- A single-file mount of `screens.toml` gave `save_failed: open
+  /config/.screens.toml.NNN: permission denied` (hence the error hint).
+
+Not verified in Docker: frames reaching a real panel, the screencast inside
+the container (the host e2e covers it with the same Chrome version), and
+hours-long runs.
+
+## Running at home
+
+Run the server near the panels, on the 192.168.200.0/24 LAN (docker-host,
+192.168.200.8, also serves the dashboards on :5050). From this dev box every
+frame and every touch crosses the tailnet twice. On the LAN they go straight
+to the panel, and the dashboard pages load from the same machine.
 
 ## How it works
 
@@ -104,7 +265,28 @@ screens.toml ──► tt7-server
   dead panel holds up only its own loops (the e2e test checks both).
 - **Shutdown:** SIGINT/SIGTERM stop the loops (closing each WebSocket), stop
   the admin server, close the tabs, then ask Chrome to quit (killed after
-  5 s). If Chrome dies, tt7-server exits 1; nothing restarts it yet (S3).
+  5 s). If Chrome dies, tt7-server exits 1, so a supervisor must restart it
+  (Docker's restart policy does, see "Docker").
+- **Loading the page** (internal/screen/nav.go): one loop per screen loads
+  the configured `url` at start, on `PUT .../url` and on `reload`. Those
+  API calls only kick the loop and answer 202 at once; a newer kick
+  abandons a load still under way, so the tab always ends on the URL that
+  was saved last (saves and kicks share one lock). A load **fails** when
+  Chrome reports a network error for it (`Page.navigate`'s `errorText`,
+  e.g. `net::ERR_CONNECTION_REFUSED`, `ERR_NAME_NOT_RESOLVED`), when the
+  page's document comes back with HTTP 400 or more (chromedp `RunResponse`
+  gives that document's response), or after 30 s. A failed load is
+  retried after 5 s, 10 s, 20 s ... up to 5 min between tries, until one
+  works or the URL changes; `url_status` and `url_error` say where it
+  stands. Frames reach the panel only while the configured URL is loaded:
+  while a load is under way or failed, screencast frames (Chrome's error
+  page, a 502 page) are dropped and the panel keeps its last good frame (or
+  its fallback clock takes over after tt7d's timeout). Once a load works,
+  the loop takes one screenshot and offers it as a capture, since Chrome
+  may have painted the page before the gate opened and a still page does
+  not paint again; a screencast frame that came in first wins. A page
+  that loaded and then lands on Chrome's error page by itself (CDP
+  `Frame.unreachableUrl` on the main frame) counts as a failed load too.
 - **Saving a URL:** BurntSushi/toml, like the other Go TOML libraries, drops
   comments when it re-encodes a file. So `PUT .../url` edits the text: it
   finds that screen's `url = ...` line and replaces only the quoted value,
@@ -173,7 +355,11 @@ make server-check   # go vet, go test (units), then server/test_server_e2e.py
   fields, bad host, bad URL, token file modes, duplicate names and hosts,
   unknown keys), the example config, URL write-back (comments kept,
   refusals leave the file alone), backoff, the pacer (dedup, max_fps,
-  Forget, the touch bypass), touch → mouse mapping, the admin API's auth
+  Forget, the touch bypass), touch → mouse mapping, the page loader (URL
+  changes and reloads return at once and abandon a hung load, retries back
+  off 5 s → 5 min and start over after a success, frames are held while a
+  load is under way or failed, the post-load screenshot never replaces a
+  newer frame, an error page after a load triggers a retry), the admin API's auth
   and errors, and regions: the tile diff on known images (one change, two
   far apart, six merged into four, faint edge changes, random changes always
   covered, full frame above the fraction), the container codec, and the
@@ -197,7 +383,13 @@ make server-check   # go vet, go test (units), then server/test_server_e2e.py
   to C by someone else, then C's fallback clock (heartbeat_s 60), must each
   turn the next tap into a 409 and a full frame; a restart of C must resync
   it in full, and taps after each must be regions again. B's navigation to
-  another page must be a full frame.
+  another page must be a full frame. Then B's URL goes to a host that
+  accepts but never answers (the PUT answers 202 in under 1 s; a reload
+  requests that configured URL again), then to a port nothing listens on
+  (`url_status` failed with `ERR_CONNECTION_REFUSED`, and B's framebuffer
+  and accepted-frame count stay exactly as they were: no error page is
+  pushed), then a server comes up on that port and B shows its page with
+  no API call. A URL answering 404 fails the same way, with nothing pushed.
 - The e2e needs Chrome at `CHROME` (default agent-browser's). If it isn't
   there, the test **fails**; it never skips.
 
@@ -212,7 +404,10 @@ make server-check   # go vet, go test (units), then server/test_server_e2e.py
 - Pages that need a real GPU, audio, or a visible window.
 - Multi-touch gestures (pinch, two-finger scroll) are not mapped: one finger
   is one mouse.
-- Chrome dying mid-run makes tt7-server exit; no supervisor restarts it yet.
-- A `PUT .../url` that races another for the same screen can leave the tab
-  on one URL and the file on the other (saves are serialized; navigations
-  are not).
+- Chrome dying mid-run makes tt7-server exit 1; only a supervisor (Docker's
+  `restart: unless-stopped`, see "Docker") brings it back.
+- A page that fails a load of its own after it loaded (it reloads itself
+  while its server is down) is caught by Chrome's error-page signal
+  (`unreachableUrl`), which only unit tests exercise. A page that turns
+  itself into an HTTP error page that way is not caught: only our own loads
+  see the status code.
