@@ -21,6 +21,10 @@ static void test_lookup(void) {
     CHECK(css && !strcmp(css->content_type, "text/css; charset=utf-8"), "css type");
     const struct asset *js = asset_find("/panel.js");
     CHECK(js && !strcmp(js->content_type, "text/javascript; charset=utf-8"), "js type");
+    const struct asset *ujs = asset_find("/update.js");
+    CHECK(ujs && !strcmp(ujs->content_type, "text/javascript; charset=utf-8"), "update.js type");
+    const struct asset *cjs = asset_find("/camera.js");
+    CHECK(cjs && !strcmp(cjs->content_type, "text/javascript; charset=utf-8"), "camera.js type");
     CHECK(asset_find("/nope") == NULL && asset_find("/index.html") == NULL && asset_find("") == NULL, "unknown");
     CHECK(asset_find("/panel.JS") == NULL, "exact match only");
 
@@ -34,17 +38,26 @@ static void test_lookup(void) {
     CHECK(total < 96 * 1024, "embedded assets stay small: %zu bytes", total);
 }
 
+static void js_guards(const struct asset *js, const char *name) {
+    CHECK(!contains(js, "innerHTML") && !contains(js, "outerHTML") && !contains(js, "insertAdjacentHTML") &&
+              !contains(js, "eval(") && !contains(js, "localStorage"),
+          "%s: dynamic text goes through textContent; the token lives in sessionStorage only", name);
+    CHECK(!contains(js, "http://") && !contains(js, "https://"), "%s: no external fetches", name);
+}
+
 static void test_csp_guards(void) {
-    const struct asset *html = asset_find("/"), *js = asset_find("/panel.js");
+    const struct asset *html = asset_find("/"), *js = asset_find("/panel.js"), *ujs = asset_find("/update.js"),
+                       *cjs = asset_find("/camera.js");
     CHECK(!contains(html, "<script>") && !contains(html, "<style") && !contains(html, " style=") &&
               !contains(html, " onclick=") && !contains(html, " onload=") && !contains(html, " onchange=") &&
               !contains(html, " oninput=") && !contains(html, " onsubmit="),
           "no inline script, style or event handlers in the HTML");
     CHECK(contains(html, "<script src=\"/panel.js\"") && contains(html, "href=\"/panel.css\""), "external files");
-    CHECK(!contains(js, "innerHTML") && !contains(js, "outerHTML") && !contains(js, "insertAdjacentHTML") &&
-              !contains(js, "eval(") && !contains(js, "localStorage"),
-          "dynamic text goes through textContent; the token lives in sessionStorage only");
-    CHECK(!contains(js, "http://") && !contains(js, "https://"), "no external fetches");
+    CHECK(contains(html, "<script src=\"/update.js\" defer>"), "the update section's script, deferred after panel.js");
+    CHECK(contains(html, "<script src=\"/camera.js\" defer>"), "the camera section's script, deferred after panel.js");
+    js_guards(js, "panel.js");
+    js_guards(ujs, "update.js");
+    js_guards(cjs, "camera.js");
 }
 
 int main(void) {

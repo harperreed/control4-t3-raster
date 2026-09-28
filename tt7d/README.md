@@ -62,6 +62,10 @@ a vendored TrueType rasterizer.
 | `mqtt-ha-device` | The device id last announced to Home Assistant, so a changed device id gets its old entities removed |
 | `tz` | Optional. First line: the fallback clock's timezone as a POSIX TZ string (see "Fallback clock"). `--tz` beats it |
 | `ntp.conf` | Optional. `server HOST` lines for ntpd; tt7-app copies it to `/etc/ntp.conf` at boot (see "Fallback clock") |
+| `update-pubkey` | Optional. An ed25519 public key as 64 hex digits (`tools/make-bundle.sh --pubkey-of KEY.pem`). Once it exists, only bundles signed with its key install; if it cannot be parsed, no bundle installs (see "Web update") |
+
+Web update keeps its own files under `/data/tt7` (`--update-root`), not in the
+data dir: `releases/` and `update/` (see "Web update (SPEC M8)").
 
 ## API (`/api/v1`)
 
@@ -135,12 +139,16 @@ Every error is JSON: `{"error": "<code>", "message": "...", ...}`.
 | 400 | `sha256_mismatch` | `header`, `computed` |
 | 400 | `invalid_config` (`PUT /config/mqtt`, `PUT /config/camera`) | `field` (null for a syntax error) |
 | 409 | `set_by_flag`: that setting comes from a `--mqtt-*` or `--camera` flag | `field` |
+| 400 | Web update, the bundle refused: `invalid_bundle` (not ustar, bad checksum, truncated), `bad_member_type` (link, device, directory, FIFO, pax or GNU header), `unsafe_path` (absolute or `..`), `unknown_file` (not an allowed path), `duplicate_member`, `no_manifest`, `invalid_manifest`, `missing_file` (listed, not in the tar), `unlisted_file` (in the tar, not listed) | `member` (when one is at fault) |
+| 400 | `hash_mismatch` | `member`, `expected`, `computed` |
+| 403 | `signature_required`, `invalid_signature` (an `update-pubkey` is set) | `member` |
+| 409 | `already_current`, `downgrade_refused` (with `--update-refuse-downgrade`), `restart_pending` (an update or rollback was just applied), `no_previous` (rollback) | `release`; `version`, `running_version` |
 | 401 | `unauthorized` (and `WWW-Authenticate: Bearer`) | |
 | 404 | `not_found`, `no_frame` | |
 | 405 | `method_not_allowed` (and `Allow`) | |
 | 408 | `request_timeout` | |
 | 411 | `length_required` (chunked, or no Content-Length on PUT) | |
-| 413 | `payload_too_large` | |
+| 413 | `payload_too_large` | `max_bytes` (web update: 4 MiB) |
 | 415 | `unsupported_media_type` | `supported` |
 | 422 | `invalid_image` | `detail` (lodepng's reason) |
 | 422 | `invalid_dimensions` | `expected` [w, h], `received` [w, h] |
@@ -148,8 +156,11 @@ Every error is JSON: `{"error": "<code>", "message": "...", ...}`.
 | 431 | `headers_too_large` | |
 | 500 | `persist_failed` (nothing changed on screen), `write_failed` (`PUT /config/mqtt`), `internal_error`, `reboot_failed` | |
 | 500 | `backlight_write_failed` | `device`, `detail` |
+| 500 | `install_failed`, `rollback_failed` (web update; `message` says which step), `invalid_pubkey` | |
 | 503 | `no_backlight`, `too_many_clients` (all 8 event stream slots taken) | |
 | 503 | `camera_disabled`, `camera_unavailable` (no device), `camera_busy` (worker restarting, or 4 requests already waiting), `camera_failed` (the worker reported an error or exited), `camera_timeout` (the worker went silent and was killed) | |
+| 503 | `insufficient_memory` (web update: checked before the body is read) | `available_bytes`, `needed_bytes` |
+| 507 | `insufficient_storage` (web update: /data would drop below `--update-min-free-bytes`) | `free_bytes`, `needed_bytes` |
 | 505 | `http_version_not_supported` | |
 
 Every refused `PUT /frame` counts in `/state` `frames.rejected`, and its code
@@ -318,8 +329,10 @@ resolution, native format and stride, rotation, brightness slider, wake,
 blank, test pattern), Input (once unlocked: the live event stream, newest
 first, and a dot on both previews where the screen was last touched; it
 reconnects with backoff), Hardware (`/hardware` as a collapsible tree), System
-(`/system`; the time is flagged when the year is before 2024), Logs, and
-Actions (reboot, behind a confirm dialog).
+(`/system`; the time is flagged when the year is before 2024), Logs, Update
+(`web/update.js`: upload a bundle with a progress bar, the running, current and
+previous release, trial, history, rollback behind a confirm dialog; see "Web
+update"), and Actions (reboot, behind a confirm dialog).
 
 **The token.** The page itself and the read-only data need no token. Paste
 the token (`/data/tt7/tt7d/token`) into the field and press Unlock: the page
@@ -442,6 +455,9 @@ make test-e2e        # the real daemon, host-built, on a file-backed fb (tt7d/te
 make test-mqtt       # the real daemon against real amqtt brokers and a paho client (tt7d/test_mqtt_e2e.py)
 make test-input      # input_event records through FIFOs; events out over the WebSocket and MQTT (tt7d/test_input_e2e.py)
 make test-camera     # the real daemon and camera worker on NV12 frames from a FIFO (tt7d/test_camera_e2e.py)
+make test-update     # web update: bundles from tools/make-bundle.sh into the real daemon (tt7d/test_update_e2e.py),
+                     # and tt7-app.sh's release selection under BusyBox sh (probe/test_tt7_app.py)
+make bundle          # build/tt7-bundle-<build>.tar from the ARM builds, for the Update section
 make check           # everything, including the boot image checks
 ```
 
@@ -798,6 +814,165 @@ With a new `build/tt7d` installed (see "Fast iteration") and the token in
 6. Off: PUT `{"enabled": false}`. The worker exits with a clean STREAMOFF (no
    `reaped` line), and `/state` `camera.last_snapshot_at` becomes null.
 
+## Web update (SPEC M8)
+
+Upload a bundle of tt7d and its helpers from the control panel's Update
+section (or `PUT /api/v1/system/update`). The panel installs it beside the
+running build, restarts into it, and goes back by itself if it does not stay
+up. The boot image, `/system`, init and its `/data/tt7/init.overlay` are never
+touched: a bundle only writes under `/data/tt7/releases` and `/data/tt7/update`.
+Updating the boot image over the web is deferred.
+
+### The bundle
+
+`make bundle` (or `tools/make-bundle.sh`) writes `build/tt7-bundle-<build>.tar`:
+a ustar tar of regular files only (BusyBox tar extracts it; the e2e test checks
+that) holding `bin/tt7d`, `bin/tt7probe`, `bin/tt7-ntp-hook`, `app`
+(`probe/tt7-app.sh`) and `manifest.json`:
+
+```json
+{"format": "tt7-bundle", "version": "0.1.0", "build": "d31d215", "created": "2026-09-28T14:55:23Z",
+ "files": [{"path": "bin/tt7d", "sha256": "…", "mode": "0755"}, …]}
+```
+
+`build` (from `build/tt7d.version`, the `git describe` tt7d was built with) is
+the release id and directory name. tt7d refuses anything else in the tar:
+links, devices, directories, absolute or `..` paths, unknown names, a file the
+manifest lists but the tar lacks or the other way round, and any file whose
+SHA-256 differs. `bin/tt7d` and `app` are required. Modes are `0755` or `0644`.
+
+**Signing (optional).** Put a public key on the panel and from then on only
+bundles signed with it install; unsigned ones get 403 `signature_required`:
+
+```sh
+openssl genpkey -algorithm ed25519 -out ~/.config/tt7/update-key.pem    # keep it off the panel
+tools/make-bundle.sh --pubkey-of ~/.config/tt7/update-key.pem > /tmp/update-pubkey
+scp -O $S /tmp/update-pubkey $P:/data/tt7/tt7d/update-pubkey
+tools/make-bundle.sh --sign ~/.config/tt7/update-key.pem                # adds manifest.sig
+```
+
+`manifest.sig` is 128 hex digits: ed25519 (RFC 8032) over `manifest.json`'s
+exact bytes, which in turn pin every file's SHA-256. tt7d checks it with
+vendored TweetNaCl (`third_party/tweetnacl/PROVENANCE`: public domain, one
+file, SHA-512 included; checked against the RFC 8032 test vectors). Without a
+key, the admin token plus the per-file SHA-256 is all the protection there is:
+the hashes catch a damaged upload, not a malicious one from someone who has
+the token.
+
+### API
+
+| Endpoint | Auth | Does |
+|---|---|---|
+| `GET /system/update` | – | `running` {`release` (null: the image's own build), `version`, `build`}, `current` and `previous` ({`release`, `version`, `build`, `created`, `usable`} or null), `trial` ({`release`, `starts`} or null), `releases` (dirs on the panel), `restart_pending`, `history` (last 20 events, oldest first: {`time`, `event`, `release`, `detail`}), `last_result` (the newest event), `last_error` (the last refused update request since tt7d started, in RAM only: {`time`, `error`, `status`}), `policy` {`max_bytes`, `signature_required`, `refuse_downgrade`, `keep_releases`, `min_free_bytes`, `confirm_after_s`} |
+| `PUT /system/update` | token | Body: the tar, `Content-Type: application/x-tar`, at most 4 MiB. Before reading the body tt7d checks the token, type, size and free RAM (MemFree + Buffers + Cached must cover 3 × the body + 16 MiB). It holds the body in RAM, verifies everything there, and only then writes to /data. Replies `202 {"release", "version", "previous", "signed", "install_ms", "restarting": true, "delay"}`, then exits with status 75 a second later |
+| `POST /system/update/rollback` | token | Swaps `current` and `previous` (the one rolled back to runs under trial), `202 {"release", "previous", "restarting": true, "delay"}`, exits 75. 409 `no_previous` if there is none |
+
+```sh
+T=$(cat ~/.config/tt7/token)
+curl -s -X PUT -H "Authorization: Bearer $T" -H 'Content-Type: application/x-tar' \
+     --data-binary @build/tt7-bundle-$(cat build/tt7d.version).tar http://$P/api/v1/system/update
+curl -s http://$P/api/v1/system/update | python3 -m json.tool
+```
+
+Flags: `--update-root` (default `/data/tt7`), `--update-confirm-after S`
+(default 30), `--update-min-free-bytes N` (default 8 MiB left free after the
+install, else 507), `--update-refuse-downgrade` (off by default, since this is
+a dev device: refuses a bundle whose `version` is below the running tt7d's).
+
+### On disk
+
+```
+/data/tt7/releases/<id>/        app, bin/tt7d, bin/tt7probe, bin/tt7-ntp-hook, manifest.json
+/data/tt7/update/current        "<id>": what tt7-app runs. Absent: the image's own build
+/data/tt7/update/previous       "<id>": what current replaced; the rollback target
+/data/tt7/update/trial          "<id> <starts>": not confirmed yet
+/data/tt7/update/history        one line per installed / confirmed / rollback_requested / rolled_back / pruned
+```
+
+Install: the files go into `releases/.incoming-<id>/` (each written, `fchmod`ed
+and `fsync`ed, then both directories `fsync`ed), which is renamed to
+`releases/<id>/`. Then `update/trial`, `update/current` and `update/previous`
+are each replaced by write-temp, fsync, rename, and `update/` is fsynced. The
+trial goes first: a power cut before `current` changes leaves a trial for a
+release that is not current, which tt7-app drops. At most 3 release
+directories stay; the oldest others go, never `current` or `previous`.
+Refused uploads write nothing to flash.
+
+On the host a 450 KB bundle installs in about 25 ms (`install_ms`). On the
+panel this is not measured yet; `install_ms` in the reply and the history line
+will say. The HTTP loop is blocked for that long.
+
+### Restart and rollback
+
+After the 202, tt7d exits with status 75. tt7-app sees 75 and execs its entry
+script again (`/data/tt7/app`, or `/usr/bin/tt7-app` if there is none), which
+runs `select_release` and execs the chosen release's own `app`. No reboot: a
+bundle changes nothing that init or the kernel use, and a reboot costs about
+40 s and once hung for 5 minutes (gotchas.md). The price: background helpers
+started at boot keep running the binaries they started with (ntpd keeps its
+hook path, the `tt7probe log` logger its tt7probe) until the next reboot. A new
+tt7d and `app` take effect at once; a new tt7probe or tt7-ntp-hook at the next
+boot.
+
+**Healthy** means tt7d's poll loop, the one that answers every request
+including `/api/v1/info`, has kept running for `--update-confirm-after` (30 s)
+since it bound its port. tt7d then deletes `update/trial`, if the trial names
+the release it runs from (`TT7_RELEASE`, set by tt7-app), and logs
+`confirmed`. A tt7d from another release never confirms it.
+
+The chain, all in `probe/tt7-app.sh` (tested under BusyBox sh by
+`probe/test_tt7_app.py`):
+
+1. **New release**, under trial. Each start counts: every start of the entry
+   script and every tt7d restart. tt7-app also stops a tt7d that has not
+   confirmed within 90 s (`TT7_TRIAL_DEADLINE`), which counts as a failed
+   start. After 2 starts (`TT7_TRIAL_MAX`) without a confirm, it rolls back.
+2. **Previous release**, under a trial of its own (`update/previous` is
+   cleared, so it cannot bounce back).
+3. **The image's own build**: no release. PATH is `/data/tt7/bin`, then the
+   image's directories.
+
+**Why not init's own rollback.** init.c (`third_party/mmkeypad/init/init.c`)
+decides once at boot whether to run `/data/tt7/app` or `/usr/bin/tt7-app`. If
+that app exits within 20 s three times in a row, init renames `/data/tt7/app`
+to `/data/tt7/app.bad` and runs the image's `/usr/bin/tt7-app` for the rest of
+the boot. It never goes back to a previous app, only to the factory one, and
+it only sees tt7-app exiting, which it never does on its own: tt7d crashes
+happen inside tt7-app's loop. So the chain lives in tt7-app, and web updates
+never rewrite `/data/tt7/app`. `TT7_TRIAL_MAX` is 2 so that a release whose
+`app` dies before it even starts tt7d is rolled back on the third start,
+before init's third strike quarantines `/data/tt7/app`. init's separate
+`init.overlay` trial (3 unconfirmed boots, confirm after 30 s) is not used.
+
+A release that was confirmed and later crashes is only restarted, never
+rolled back. A release whose `app` hangs without exiting is caught at the next
+boot, not before.
+
+### Putting it on the panel that runs today
+
+The panel runs main's tt7-app as `/data/tt7/app` and main's tt7d from
+`/data/tt7/bin`, on a boot image built from an earlier commit. None of those
+know about releases, and main's tt7d has no update endpoint, so the first step
+is one ssh copy (no reflash):
+
+```sh
+make tt7d bundle
+P=root@<panel-ip>; S="-o UserKnownHostsFile=build/known_hosts"
+scp -O $S probe/tt7-app.sh $P:/data/tt7/app.new
+scp -O $S build/tt7d $P:/data/tt7/bin/tt7d.new
+ssh $S $P 'chmod 755 /data/tt7/app.new /data/tt7/bin/tt7d.new && mv /data/tt7/app.new /data/tt7/app && mv /data/tt7/bin/tt7d.new /data/tt7/bin/tt7d && sync'
+ssh $S $P 'nohup reboot -f > /dev/null 2>&1 &'      # init reads /data/tt7/app at boot; needs Doctor Biz's go-ahead
+```
+
+After the reboot `app.log` says "running the image's own build (no release is
+current)". Then upload `build/tt7-bundle-<build>.tar` in the Update section.
+From then on every update goes through the web. Keep `/data/tt7/bin/tt7d`: it
+is the end of the chain, and the image's own `/usr/bin/tt7d` on this panel
+predates the update endpoint. If init ever quarantines `/data/tt7/app`, this
+image's `/usr/bin/tt7-app` runs and ignores releases until `/data/tt7/app` is
+put back. An image built from this commit has the same selection logic in
+`/usr/bin/tt7-app`, so a reflash removes that gap but is not needed.
+
 ## On the panel
 
 `probe/tt7-app.sh` (the image's `/usr/bin/tt7-app`) starts, all in the
@@ -807,8 +982,10 @@ so it runs beside tt7d's own input handling and keeps the raw records to
 compare tt7d's events against). Then it runs `tt7d --data-dir /data/tt7/tt7d`
 in a loop, so the fallback clock is up within seconds of boot instead of after
 discovery (SPEC §38). If tt7d exits,
-it restarts after 2 s without re-running the steps before it. `/data/tt7/bin`
-comes first on its PATH, so a binary copied there replaces the image's copy.
+it restarts after 2 s without re-running the steps before it. PATH is the
+current release's `bin` (see "Web update"), then `/data/tt7/bin`, then the
+image's directories: a binary copied to `/data/tt7/bin` replaces the image's
+copy, but not a web-installed release's.
 
 ### Fast iteration without reflashing
 
@@ -827,6 +1004,10 @@ ssh $S $P tail -n 20 /data/tt7/app.log       # "tt7-app: starting /data/tt7/bin/
 
 `scp -O` because the panel's Dropbear has scp but no sftp server. The `mv`
 replaces the file in one step, so tt7-app never starts a half-copied binary.
+Once a web-installed release is current, its `bin/tt7d` comes first on PATH
+and this copy is not used: upload a bundle instead, or remove
+`/data/tt7/update/current` and restart tt7-app to go back to it. Note that
+`killall tt7d` while a release is under trial counts as a failed start.
 To go back to the image's build: `ssh $S $P 'rm /data/tt7/bin/tt7d && killall tt7d'`.
 
 Fetch the token for `tools/push-frame.sh` once:
@@ -876,6 +1057,18 @@ curl -s http://<panel-ip>/api/v1/state | python3 -m json.tool | grep -A10 '"mqtt
 
 ## Unverified
 
+- All of "Web update" on the panel: nothing of it has run there. On the host:
+  the daemon took real bundles over HTTP (e2e), tt7-app's selection functions
+  ran under BusyBox 1.37 sh (the Ubuntu host's, not the panel's 1.36.1), and
+  one headless Chromium session through agent-browser uploaded a bundle in the
+  Update section, saw the confirm, and a refused file (no console or CSP
+  errors, fits 390 px). The whole tt7-app loop (background tt7d, the 90 s
+  watchdog, `exec` of the entry script after exit 75) has not run anywhere:
+  only its decision functions are tested. Install time and fsync cost on the
+  panel's NAND are not measured. Whether `rename()` and `fsync()` on the
+  panel's /data (ext4 on the rk30xxnand FTL) survive a power cut as ext4
+  promises is not tested. TweetNaCl is checked with the RFC vectors on the
+  host only; the ARM build compiles it but has not verified a signature.
 - All of "Input (M3)" on the real panel. It has run only on the host,
   against FIFOs carrying records the test wrote. No event sequence recorded
   on the panel was replayed: the touch unit tests use sequences written from

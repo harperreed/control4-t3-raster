@@ -34,20 +34,23 @@ TT7D_LIB     := tt7d/json.c tt7d/flatconf.c tt7d/http.c tt7d/render.c tt7d/sha25
                 tt7d/server.c tt7d/mqtt_packet.c tt7d/mqtt_config.c tt7d/mqtt_client.c tt7d/mqtt.c \
                 tt7d/sha1.c tt7d/ws.c tt7d/touch.c tt7d/input.c \
                 tt7d/fallback.c tt7d/timesync.c tt7d/font.c tt7d/clockface.c \
-                tt7d/camera_config.c tt7d/camera_proto.c tt7d/presence.c
-TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/panel.c tt7d/events.c tt7d/fallback_screen.c tt7d/main.c \
+                tt7d/camera_config.c tt7d/camera_proto.c tt7d/presence.c tt7d/bundle.c tt7d/sign.c
+TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/panel.c tt7d/events.c tt7d/fallback_screen.c \
+                tt7d/update.c tt7d/main.c \
                 tt7d/camera.c tt7d/camera_worker.c cam/capture.c cam/yuv.c cam/sentinel.c cam/motion.c cam/jpeg.c
-TT7D_WEB     := tt7d/web/index.html tt7d/web/panel.css tt7d/web/panel.js tt7d/web/camera.js
+TT7D_WEB     := tt7d/web/index.html tt7d/web/panel.css tt7d/web/panel.js tt7d/web/camera.js tt7d/web/update.js
 TT7D_HDRS    := $(wildcard tt7d/*.h) probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h third_party/lodepng/lodepng.h \
-                third_party/stb/stb_truetype.h $(wildcard cam/*.h) third_party/stb/stb_image_write.h
-TT7D_INC     := -Itt7d -Icam -Iprobe -I$(FONT_DIR) -Ithird_party/lodepng -Ithird_party/stb
+                third_party/stb/stb_truetype.h $(wildcard cam/*.h) third_party/stb/stb_image_write.h \
+                third_party/tweetnacl/tweetnacl.h third_party/tweetnacl/tweetnacl.c
+TT7D_INC     := -Itt7d -Icam -Iprobe -I$(FONT_DIR) -Ithird_party/lodepng -Ithird_party/stb -Ithird_party/tweetnacl
 # The fallback clock's typefaces (third_party/fonts/inter/PROVENANCE), embedded like the web assets.
 TT7D_FONTS   := third_party/fonts/inter/InterDisplay-Light.ttf third_party/fonts/inter/Inter-Regular.ttf
 LODEPNG      := third_party/lodepng/lodepng.cpp
 LODEPNG_DEFS := -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP \
                 -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS
 TT7D_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
-TT7D_UNITS   := render json http util sysinfo control hardware assets mqtt ws input fallback timesync clockface camera
+TT7D_UNITS   := render json http util sysinfo control hardware assets mqtt ws input fallback timesync clockface camera \
+                bundle
 
 # cam: camera capture tool for the panel (cam/). A separate static binary, not
 # part of the boot image: copy build/tt7cam to the panel and run it there.
@@ -59,7 +62,7 @@ CAM_UNITS := kabi yuv sentinel motion jpeg
 # Pinned Pillow decodes tt7cam's JPEG in the host end-to-end test.
 CAM_PILLOW := uv run --quiet --no-project --with pillow==12.3.0 python3
 
-.PHONY: all image busybox dropbear wifi tt7d cam test-host test-e2e test-mqtt test-input test-camera test-cam check clean FORCE
+.PHONY: all image busybox dropbear wifi tt7d cam bundle test-host test-e2e test-mqtt test-input test-camera test-cam test-update check clean FORCE
 .DELETE_ON_ERROR:
 
 all: image
@@ -103,6 +106,7 @@ $(TT7D_ASSETS_C): tt7d/embed.py $(TT7D_WEB) $(B)/gen/test-pattern.png $(TT7D_FON
 	@mkdir -p $(B)/gen
 	python3 tt7d/embed.py $@ /=tt7d/web/index.html /panel.css=tt7d/web/panel.css /panel.js=tt7d/web/panel.js \
 		/camera.js=tt7d/web/camera.js \
+		/update.js=tt7d/web/update.js \
 		test-pattern.png=$(B)/gen/test-pattern.png \
 		font-time.ttf=third_party/fonts/inter/InterDisplay-Light.ttf font-text.ttf=third_party/fonts/inter/Inter-Regular.ttf
 
@@ -224,15 +228,27 @@ test-cam: $(CAM_UNITS:%=$(B)/host/cam_test_%) $(B)/host/tt7cam $(B)/tt7cam
 	@d=$$(file -b $(B)/tt7cam); case "$$d" in *"ARM, EABI5"*"statically linked"*) echo "  ok   $(B)/tt7cam: $$d";; \
 		*) echo "FAIL $(B)/tt7cam is not a static ARM EABI5 executable: $$d"; exit 1;; esac
 
+# Web update: the host daemon installs bundles made by tools/make-bundle.sh from
+# the ARM builds (tt7d/test_update_e2e.py); tt7-app.sh's release selection runs
+# under BusyBox sh, the panel's shell (probe/test_tt7_app.py).
+test-update: $(B)/host/tt7d $(B)/tt7d $(B)/tt7probe
+	python3 tt7d/test_update_e2e.py --daemon $(B)/host/tt7d --payload-dir $(B)
+	python3 probe/test_tt7_app.py --shell "busybox sh"
+
+# An update bundle for the control panel's Update section: build/tt7-bundle-<build>.tar.
+# Sign it with: tools/make-bundle.sh --sign KEY.pem (see tt7d/README.md).
+bundle: $(B)/tt7d $(B)/tt7probe
+	tools/make-bundle.sh
+
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
                  scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \
                  scripts/build-wpa.sh scripts/wifi-setup.sh scripts/test-wifi-setup.sh \
-                 tools/push-frame.sh tools/mqtt-setup.sh tools/subset-fonts.sh
+                 tools/push-frame.sh tools/mqtt-setup.sh tools/subset-fonts.sh tools/make-bundle.sh
 DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh probe/tt7-ntp-hook.sh
 # A system shellcheck if there is one, else the pinned PyPI build through uv.
 SHELLCHECK := $(shell command -v shellcheck 2>/dev/null || echo "uvx --from shellcheck-py==0.11.0.1 shellcheck")
 
-check: test-host test-e2e test-mqtt test-input test-camera test-cam $(IMAGE)
+check: test-host test-e2e test-mqtt test-input test-camera test-cam test-update $(IMAGE)
 	python3 scripts/check-image.py --image $(IMAGE) --stock $(STOCK_BOOT) --pubkey $(SSH_PUBKEY)
 	@for s in $(SHELL_SCRIPTS); do bash -n $$s || exit 1; done; echo "  ok   bash -n: $(SHELL_SCRIPTS)"
 	@for s in $(DEVICE_SCRIPTS); do sh -n $$s || exit 1; done; echo "  ok   sh -n: $(DEVICE_SCRIPTS)"

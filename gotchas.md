@@ -135,3 +135,14 @@
 - A 720p JPEG did not fit tt7d's old 64 KiB MQTT send queue; it is 512 KiB now (mqtt_client.h).
 - Unverified on the panel: whether the RK CIF driver is happy with one streaming session and a grab every 500 ms (presence mode), and what its release path does after SIGKILL.
 - Claude agents in an isolated worktree: the Bash guard refuses long heredocs, inline python edits and commands with runtime-computed values. Write the script to the scratchpad with the Write tool, then run it with a plain `bash`/`python3` call.
+
+## Web update, M8 (2026-09-28, branch tt7d-web-update; host-tested only)
+- init.c's app rollback can't protect a tt7d update. It only sees tt7-app exit (tt7-app never does; tt7d crashes stay inside its loop), and it only falls back to the image's `/usr/bin/tt7-app` (renames `/data/tt7/app` to `app.bad` after 3 exits under 20 s). It never restores a previous app. The release chain (new → previous → image) lives in `probe/tt7-app.sh`; web updates never rewrite `/data/tt7/app`.
+- `TT7_TRIAL_MAX=2` on purpose: a release whose `app` dies at once is rolled back on its 3rd start, just before init's 3rd strike quarantines `/data/tt7/app`.
+- tt7d exits **75** after an install or rollback, and tt7-app re-execs its entry script. `UPDATE_EXIT_RESTART` (tt7d/update.h) and `TT7_EXIT_RESTART` (tt7-app.sh) must match; `probe/test_tt7_app.py` checks it.
+- Once a release is current, its `bin/` comes before `/data/tt7/bin` on PATH, so "scp tt7d to /data/tt7/bin + killall" no longer takes effect. Also, `killall tt7d` during a trial counts as a failed start.
+- The panel as deployed (main's `/data/tt7/app` + `/data/tt7/bin/tt7d`, older image) needs one ssh copy of the new tt7-app.sh and tt7d plus a reboot before the web can update it. No reflash (tt7d/README.md "Putting it on the panel that runs today").
+- The host ASan tt7d is 5.7 MB (4.2 MB stripped), over the 4 MiB bundle cap, so `make test-update` bundles the ARM `build/tt7d` and `build/tt7probe` and runs the host daemon.
+- TweetNaCl 20140427 left-shifts negative signed carries (UB; UBSan reports it). Two lines patched to multiplications; see `third_party/tweetnacl/PROVENANCE`.
+- Sourcing a tt7-app.sh on the host runs its whole body (ntpd waiter, tt7d loop, `/tmp/tt7*` pid files). Tests source it with `TT7_APP_LIB=1`, which returns right after the function definitions.
+- In this sandbox `agent-browser ... eval` is refused (read as shell `eval`); use `get text`, `get attr` and `snapshot`.

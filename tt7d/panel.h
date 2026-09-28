@@ -59,6 +59,9 @@ int panel_wake(struct panel *p);
 #define REBOOT_DELAY_S 1 /* lets an HTTP reply or MQTT publish get out first */
 int panel_reboot(struct panel *p);
 
+/* A /proc/meminfo value in KiB (key without the colon, e.g. "MemFree"), or -1. */
+long meminfo_kib(const char *proc_root, const char *key);
+
 /* Answer a request that panel_check_head() accepted. */
 void panel_handle(struct panel *p, const struct http_request *req, const uint8_t *body, size_t len,
                   struct response *resp);

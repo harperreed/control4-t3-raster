@@ -1,15 +1,144 @@
 #!/bin/sh
 # ABOUTME: The TT7 image's app, run (and respawned) by init as /usr/bin/tt7-app (or /data/tt7/app).
-# ABOUTME: One results dir per boot; NTP, Wi-Fi, discovery and the input logger in the background; tt7d forever.
+# ABOUTME: Picks the web-installed release to run; NTP, Wi-Fi, discovery and input logger in the background; tt7d forever.
 #
 # Writes only under /data/tt7. If /data did not mount, results go to /tmp/tt7
 # (RAM) so nothing lands on the ramdisk's empty /data mount point.
 #
-# /data/tt7/bin comes first on PATH: a build copied there over ssh (tt7d,
-# tt7probe, ...) replaces the image's copy without a reflash. Delete it to go
-# back to the image's.
+# Releases (web update, SPEC M8): tt7d's PUT /api/v1/system/update installs a
+# bundle into /data/tt7/releases/<id>/ (app, bin/tt7d, ...), writes <id> to
+# /data/tt7/update/current, the one before to update/previous, and "<id> 0" to
+# update/trial. This script decides what runs (select_release below). A
+# release under trial gets TT7_TRIAL_MAX starts, and tt7d deletes update/trial
+# once it has served for a while. Otherwise the chain is: new release ->
+# previous release (under trial too) -> the image's own build.
+#
+# PATH: a current release's bin first, then /data/tt7/bin, then the image's
+# own directories. A build copied to /data/tt7/bin over ssh (tt7d, tt7probe,
+# ...) replaces the image's copy without a reflash, when no release is current.
 
-PATH=/data/tt7/bin:/bin:/sbin:/usr/bin:/usr/sbin
+TT7_TRIAL_MAX=2       # starts a release gets before it is rolled back (init quarantines /data/tt7/app at 3)
+TT7_TRIAL_DEADLINE=90 # seconds tt7d has to confirm a release under trial before it is stopped
+TT7_EXIT_RESTART=75   # tt7d exits with this after an update or rollback: start over from the entry script
+
+# The release id in $1/update/$2, or nothing if there is none or it is not an id.
+rel_read() {
+    rr_id=$(head -n 1 "$1/update/$2" 2> /dev/null)
+    case $rr_id in '' | .* | -* | *[!A-Za-z0-9._+-]*) return 0 ;; esac
+    echo "$rr_id"
+}
+
+# Point $1/update/$2 at release $3, or remove it if $3 is empty. rename() is atomic.
+rel_write() {
+    if [ -z "$3" ]; then
+        rm -f "$1/update/$2"
+    else
+        echo "$3" > "$1/update/$2.tmp" && mv -f "$1/update/$2.tmp" "$1/update/$2"
+    fi
+}
+
+rel_usable() { [ -x "$1/releases/$2/app" ] && [ -x "$1/releases/$2/bin/tt7d" ]; }
+
+# One line to $1/update/history (GET /api/v1/system/update shows it) and to the log.
+rel_log() {
+    rl_root=$1
+    shift
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$rl_root/update/history"
+    echo "tt7-app: update: $*" >&2
+}
+
+# The trial in $1/update/trial as "id starts", or nothing.
+trial_read() {
+    tr_id='' tr_n=''
+    read -r tr_id tr_n 2> /dev/null < "$1/update/trial"
+    case $tr_n in '' | *[!0-9]*) return 0 ;; esac
+    [ -n "$tr_id" ] && echo "$tr_id $tr_n"
+}
+
+trial_write() { echo "$2 $3" > "$1/update/trial.tmp" && mv -f "$1/update/trial.tmp" "$1/update/trial"; }
+
+# Exit 0 if release $2 is under trial.
+trial_pending() {
+    [ -n "$2" ] || return 1
+    tp=$(trial_read "$1")
+    [ "${tp% *}" = "$2" ]
+}
+
+# Release $2 failed ($3 says how): run the previous release under trial, or
+# else the image's own build.
+rel_fail_over() {
+    fo_prev=$(rel_read "$1" previous)
+    if [ -n "$fo_prev" ] && [ "$fo_prev" != "$2" ] && rel_usable "$1" "$fo_prev"; then
+        trial_write "$1" "$fo_prev" 0
+        rel_write "$1" current "$fo_prev"
+        rel_write "$1" previous ""
+        rel_log "$1" rolled_back "$2" "to=$fo_prev" "$3"
+    else
+        rel_write "$1" current ""
+        rel_write "$1" previous ""
+        rm -f "$1/update/trial"
+        rel_log "$1" rolled_back "$2" to=image "$3"
+    fi
+    sync
+}
+
+# Print the release id to run from root $1 (nothing: the image's own build).
+# Each call is a start: under trial it counts one, and a release that already
+# had TT7_TRIAL_MAX starts without being confirmed is rolled back here.
+select_release() {
+    while :; do
+        sr_cur=$(rel_read "$1" current)
+        if [ -z "$sr_cur" ]; then
+            [ -e "$1/update/current" ] && rel_write "$1" current "" # not a release id: never follow it
+            rm -f "$1/update/trial"
+            return 0
+        fi
+        if ! rel_usable "$1" "$sr_cur"; then
+            rel_fail_over "$1" "$sr_cur" missing_or_not_executable
+            continue
+        fi
+        sr_trial=$(trial_read "$1")
+        if [ -n "$sr_trial" ] && [ "${sr_trial% *}" = "$sr_cur" ]; then
+            sr_n=${sr_trial#* }
+            if [ "$sr_n" -ge "$TT7_TRIAL_MAX" ]; then
+                rel_fail_over "$1" "$sr_cur" "not_confirmed_after_${sr_n}_starts"
+                continue
+            fi
+            trial_write "$1" "$sr_cur" $((sr_n + 1))
+        elif [ -e "$1/update/trial" ]; then
+            rm -f "$1/update/trial" # for another release, or unreadable
+        fi
+        echo "$sr_cur"
+        return 0
+    done
+}
+
+# tt7d from release $2 ("" for the image's build) exited with status $3.
+# Prints what to do: restart (start over from the entry script), rollback
+# (the same, once the trial has run out), or again (restart tt7d).
+after_tt7d_exit() {
+    if [ "$3" = "$TT7_EXIT_RESTART" ]; then
+        echo restart
+    elif trial_pending "$1" "$2"; then
+        ae_n=$(trial_read "$1")
+        ae_n=${ae_n#* }
+        if [ "$ae_n" -ge "$TT7_TRIAL_MAX" ]; then
+            echo rollback
+        else
+            trial_write "$1" "$2" $((ae_n + 1))
+            echo again
+        fi
+    else
+        echo again
+    fi
+}
+
+# Tests source this file for the functions above (probe/test_tt7_app.py).
+if [ "${TT7_APP_LIB:-}" = 1 ]; then
+    return 0
+fi
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
 
 base=/data/tt7
@@ -19,6 +148,27 @@ if ! grep -q ' /data ' /proc/mounts; then
 fi
 disc=$base/discovery
 mkdir -p "$disc" || exit 1
+
+# Which release runs. Decided once per start of the entry script (init runs it
+# at boot and again if it exits; this script starts over after an update):
+# pick one, then exec the release's own app, which skips this step
+# (TT7_SELECTED is set).
+if [ -z "${TT7_SELECTED:-}" ]; then
+    TT7_ENTRY=$0
+    TT7_RELEASE=
+    if [ "$base" = /data/tt7 ]; then
+        mkdir -p "$base/update"
+        TT7_RELEASE=$(select_release "$base")
+    fi
+    TT7_SELECTED=1
+    export TT7_ENTRY TT7_RELEASE TT7_SELECTED
+    if [ -n "$TT7_RELEASE" ]; then
+        echo "tt7-app: running release $TT7_RELEASE"
+        exec "$base/releases/$TT7_RELEASE/app"
+    fi
+    echo "tt7-app: running the image's own build (no release is current)"
+fi
+PATH=${TT7_RELEASE:+$base/releases/$TT7_RELEASE/bin:}/data/tt7/bin:/bin:/sbin:/usr/bin:/usr/sbin
 
 # One results dir per boot. /tmp is RAM, so the marker dies with the boot and
 # app respawns within a boot reuse the same dir.
@@ -111,12 +261,37 @@ if ! running "$logger_pid"; then
     echo $! > "$logger_pid"
 fi
 
-# The display daemon, in the foreground (its log is this app's log). Restart
-# it here rather than exiting, so a tt7d crash or a deliberate `killall tt7d`
-# (to pick up a new /data/tt7/bin/tt7d) does not re-run the steps above.
+# The display daemon (its log is this app's log). Restart it here rather than
+# exiting, so a tt7d crash or a deliberate `killall tt7d` (to pick up a new
+# /data/tt7/bin/tt7d) does not re-run the steps above. Under trial, tt7d has
+# TT7_TRIAL_DEADLINE seconds to confirm its release, or it is stopped, which
+# counts as a failed start. tt7d exits with TT7_EXIT_RESTART after installing
+# an update or a rollback; this script then starts over from the entry script.
 while :; do
-    echo "tt7-app: starting $(command -v tt7d)"
-    tt7d --data-dir "$base/tt7d"
-    echo "tt7-app: tt7d exited ($?); restarting in 2 s"
+    echo "tt7-app: starting $(command -v tt7d)${TT7_RELEASE:+ (release $TT7_RELEASE)}"
+    tt7d --data-dir "$base/tt7d" &
+    tt7d_pid=$!
+    watch_pid=
+    if trial_pending "$base" "$TT7_RELEASE"; then
+        (
+            sleep "$TT7_TRIAL_DEADLINE"
+            if trial_pending "$base" "$TT7_RELEASE"; then
+                echo "tt7-app: release $TT7_RELEASE not confirmed within ${TT7_TRIAL_DEADLINE}s; stopping tt7d"
+                kill "$tt7d_pid"
+            fi
+        ) &
+        watch_pid=$!
+    fi
+    wait "$tt7d_pid"
+    rc=$?
+    [ -n "$watch_pid" ] && kill "$watch_pid" 2> /dev/null
+    case $(after_tt7d_exit "$base" "$TT7_RELEASE" "$rc") in
+        restart | rollback)
+            echo "tt7-app: tt7d exited ($rc); starting over from $TT7_ENTRY"
+            unset TT7_SELECTED
+            exec "$TT7_ENTRY"
+            ;;
+    esac
+    echo "tt7-app: tt7d exited ($rc); restarting in 2 s"
     sleep 2
 done

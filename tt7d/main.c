@@ -20,6 +20,7 @@
 #include "server.h"
 #include "sysinfo.h"
 #include "timesync.h"
+#include "update.h"
 
 #define FIRMWARE_VERSION "0.1.0"
 #ifndef TT7D_VERSION
@@ -55,6 +56,11 @@ struct config {
     int camera_flag; /* --camera on|off: 1 or 0; -1 when not given */
     const char *camera_dev;
     const char *camera_fake_source; /* TEST ONLY */
+    /* Web update (update.h). */
+    const char *update_root;
+    int update_refuse_downgrade;
+    unsigned update_confirm_after_s;
+    unsigned long long update_min_free;
 };
 
 struct app {
@@ -67,6 +73,7 @@ struct app {
     struct fallback_screen fallback;
     struct camera camera;
     int n_event_fds; /* poll entries events_prepare filled, before the camera's */
+    struct update update;
     char token[256];
     char device_id[32]; /* "" if device.json is unusable: reported as null */
     struct timespec started;
@@ -107,6 +114,10 @@ static void usage(FILE *out) {
             "  --camera-dev PATH         the camera's V4L2 node (default /dev/video0)\n"
             "  --camera-fake-source PATH TEST ONLY: read 1280x720 NV12 frames from this file or FIFO instead\n"
             "                            of the camera (tt7d/README.md, Camera)\n"
+            "  --update-root PATH        where web updates install releases (default /data/tt7; tt7d/README.md)\n"
+            "  --update-refuse-downgrade refuse bundles whose version is older than this tt7d's\n"
+            "  --update-confirm-after S  a release under trial is confirmed after S seconds of serving (default 30)\n"
+            "  --update-min-free-bytes N free space an install must leave on the update root (default 8388608)\n"
             "  --version, --help\n");
 }
 
@@ -119,17 +130,33 @@ static int parse_uint(const char *s, unsigned long max, unsigned long *out) {
     return 0;
 }
 
+/* A byte count too big for unsigned long on the 32-bit panel. */
+static int parse_ull(const char *s, unsigned long long *out) {
+    char *end;
+    errno = 0;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (*s < '0' || *s > '9' || *end || errno) return -1;
+    *out = v;
+    return 0;
+}
+
 static int parse_args(int argc, char **argv, struct config *c) {
     *c = (struct config){.listen = "0.0.0.0:80", .fb = "/dev/fb0", .rotation = 270, .data_dir = "/data/tt7/tt7d",
                          .sysfs_root = "/sys", .proc_root = "/proc", .log_file = "/data/tt7/app.log",
                          .reboot_cmd = "reboot -f", .input_dir = "/dev/input", .max_frame_bytes = 8u << 20,
                          .timeout_ms = 30000, .fallback_timeout_s = 300, .ntp_marker = TIMESYNC_DEFAULT_MARKER,
-                         .camera_flag = -1, .camera_dev = "/dev/video0"};
+                         .camera_flag = -1, .camera_dev = "/dev/video0",
+                         .update_root = "/data/tt7", .update_confirm_after_s = 30,
+                         .update_min_free = UPDATE_DEFAULT_MIN_FREE};
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) {
             usage(stdout);
             exit(0);
+        }
+        if (!strcmp(a, "--update-refuse-downgrade")) { /* a switch: it takes no value */
+            c->update_refuse_downgrade = 1;
+            continue;
         }
         if (!strcmp(a, "--version")) {
             printf("tt7d %s (%s)\n", FIRMWARE_VERSION, TT7D_VERSION);
@@ -141,6 +168,7 @@ static int parse_args(int argc, char **argv, struct config *c) {
         }
         const char *v = argv[++i];
         unsigned long n;
+        unsigned long long n64;
         if (!strcmp(a, "--listen")) c->listen = v;
         else if (!strcmp(a, "--fb")) c->fb = v;
         else if (!strcmp(a, "--fb-file")) c->fb_file = v;
@@ -159,6 +187,10 @@ static int parse_args(int argc, char **argv, struct config *c) {
         else if (!strcmp(a, "--camera") && (!strcmp(v, "on") || !strcmp(v, "off"))) c->camera_flag = !strcmp(v, "on");
         else if (!strcmp(a, "--camera-dev") && *v) c->camera_dev = v;
         else if (!strcmp(a, "--camera-fake-source") && *v) c->camera_fake_source = v;
+        else if (!strcmp(a, "--update-root") && *v) c->update_root = v;
+        else if (!strcmp(a, "--update-confirm-after") && parse_uint(v, 3600, &n) == 0 && n > 0)
+            c->update_confirm_after_s = (unsigned)n;
+        else if (!strcmp(a, "--update-min-free-bytes") && parse_ull(v, &n64) == 0) c->update_min_free = n64;
         else if (!strcmp(a, "--fb-stride") && parse_uint(v, 1u << 20, &n) == 0) c->fb_stride = (unsigned)n;
         else if (!strcmp(a, "--rotation") && parse_uint(v, 270, &n) == 0 && render_rotation_valid((int)n))
             c->rotation = (int)n;
@@ -222,7 +254,8 @@ static void info_json(struct app *a, struct sbuf *sb) {
                 "\"PUT /api/v1/display/brightness\",\"POST /api/v1/display/blank\",\"POST /api/v1/display/wake\","
                 "\"POST /api/v1/display/test-pattern\",\"POST /api/v1/system/reboot\",\"GET /api/v1/config/mqtt\","
                 "\"PUT /api/v1/config/mqtt\",\"GET /api/v1/events\",\"POST /api/v1/heartbeat\","
-                "\"GET /api/v1/camera/snapshot\",\"GET /api/v1/config/camera\",\"PUT /api/v1/config/camera\"]}}");
+                "\"GET /api/v1/camera/snapshot\",\"GET /api/v1/config/camera\",\"PUT /api/v1/config/camera\","
+                "\"PUT /api/v1/system/update\",\"POST /api/v1/system/update/rollback\"]}}");
 }
 
 static double seconds_since(const struct timespec *t, clockid_t clock) {
@@ -310,6 +343,7 @@ static int allowed(const char *allow, const char *method) {
 
 static int app_check_head(void *ctx, const struct http_request *req, struct response *resp) {
     struct app *a = ctx;
+    if (update_owns(req->path)) return update_check_head(&a->update, req, resp);
     int rc = events_check_head(&a->events, req, resp);
     if (rc != EVENTS_NOT_MINE) return rc;
     rc = panel_check_head(&a->panel, req, resp);
@@ -336,7 +370,9 @@ static void app_handle(void *ctx, const struct http_request *req, const uint8_t 
                        struct response *resp) {
     struct app *a = ctx;
     resp->status = 200;
-    if (!strcmp(req->path, "/api/v1/heartbeat")) {
+    if (update_owns(req->path)) {
+        update_handle(&a->update, req, body, len, resp);
+    } else if (!strcmp(req->path, "/api/v1/heartbeat")) {
         fallback_screen_handle(&a->fallback, resp);
     } else if (!strcmp(req->path, CAMERA_SNAPSHOT_PATH) || !strcmp(req->path, CAMERA_CONFIG_PATH)) {
         camera_handle(&a->camera, req, body, len, resp);
@@ -366,6 +402,7 @@ static void app_handle(void *ctx, const struct http_request *req, const uint8_t 
 /* Failure telemetry (SPEC 42): every refused frame PUT, whoever refused it. */
 static void app_on_reply(void *ctx, const struct http_request *req, const struct response *resp) {
     struct app *a = ctx;
+    update_on_reply(&a->update, req, resp);
     if (is_frame_put(req) && resp->status >= 400) {
         a->frames.rejected++;
         a->frames.last_error = resp->error;
@@ -393,6 +430,7 @@ static int app_poll_prepare(void *ctx, struct pollfd *pfd, int max, int64_t *wai
     struct app *a = ctx;
     mqtt_app_prepare(&a->mqtt, &pfd[0], wait_ms);
     fallback_screen_prepare(&a->fallback, wait_ms);
+    update_prepare(&a->update, wait_ms);
     a->n_event_fds = events_prepare(&a->events, pfd + 1, max - 1, wait_ms);
     return 1 + a->n_event_fds + camera_prepare(&a->camera, pfd + 1 + a->n_event_fds, max - 1 - a->n_event_fds, wait_ms);
 }
@@ -405,6 +443,7 @@ static void app_poll_service(void *ctx, const struct pollfd *pfd, int n) {
     fallback_screen_service(&a->fallback);
     events_service(&a->events, pfd + 1, a->n_event_fds);
     camera_service(&a->camera, pfd + 1 + a->n_event_fds, n - 1 - a->n_event_fds);
+    update_service(&a->update); /* last: it may exit to restart into a new release */
 }
 
 static int app_take_over(void *ctx, int fd, const struct http_request *req) {
@@ -486,12 +525,21 @@ int main(int argc, char **argv) {
     events_init(&a.events, a.cfg.input_dir, a.cfg.sysfs_root, &a.disp, &a.frames, &a.fallback, &a.mqtt, a.token,
                 a.device_id);
 
-    /* The camera last: it uses the panel (presence wake), MQTT and the event stream. */
+    /* The camera after the panel (presence wake), MQTT and the event stream, which it uses. */
     struct camera_init_args ca = {.data_dir = a.cfg.data_dir, .device = a.cfg.camera_dev,
                                   .fake_source = a.cfg.camera_fake_source, .flag_enabled = a.cfg.camera_flag,
                                   .sysfs_root = a.cfg.sysfs_root, .token = a.token, .panel = &a.panel,
                                   .mqtt = &a.mqtt, .events = &a.events};
     camera_init(&a.camera, &ca);
+
+    /* Web update. TT7_RELEASE names the release tt7-app started us from. The
+     * confirm timer starts here, just before the HTTP server listens. */
+    struct update_config uc = {.root = a.cfg.update_root, .data_dir = a.cfg.data_dir, .proc_root = a.cfg.proc_root,
+                               .token = a.token, .firmware_version = FIRMWARE_VERSION, .build = TT7D_VERSION,
+                               .release = getenv("TT7_RELEASE"), .refuse_downgrade = a.cfg.update_refuse_downgrade,
+                               .confirm_after_s = a.cfg.update_confirm_after_s,
+                               .min_free_bytes = a.cfg.update_min_free};
+    update_init(&a.update, &uc);
 
     struct server_config sc = {.listen = a.cfg.listen, .max_head = 8192, .max_body = a.cfg.max_frame_bytes,
                                .timeout_ms = a.cfg.timeout_ms, .max_connections = 8};

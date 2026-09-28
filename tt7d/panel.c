@@ -338,7 +338,7 @@ static void logs(struct panel *p, const struct http_request *req, struct respons
 /* ---- /system and /hardware ------------------------------------------------------- */
 
 /* A /proc/meminfo value in KiB, or -1. */
-static long meminfo_kib(const char *proc_root, const char *key) {
+long meminfo_kib(const char *proc_root, const char *key) {
     char path[512], line[128];
     snprintf(path, sizeof path, "%s/meminfo", proc_root);
     FILE *f = fopen(path, "r");
