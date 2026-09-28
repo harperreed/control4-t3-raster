@@ -19,4 +19,20 @@ void sysinfo_network(struct sbuf *sb, const char *sysfs_root);
 /* Backlight for /state: sets *on (-1 unknown) and *percent (-1 unknown). */
 void sysinfo_backlight(const char *sysfs_root, int *on, int *percent);
 
+/* Plain values for MQTT telemetry and Home Assistant discovery. -1 means
+ * unknown or absent; strings are "" when absent. */
+struct sysinfo_values {
+    int has_battery;      /* a Battery supply that is present */
+    int battery_percent;  /* an estimate (gotchas.md) */
+    int charging;         /* 1, 0, or -1 unknown */
+    int external_power;   /* the Mains supply's online: 1, 0, or -1 */
+    int has_backlight;
+    int backlight_max;
+    int display_on;       /* 1, 0, or -1 */
+    int brightness_percent;
+    int has_wifi, has_ethernet;
+    char wifi_ip[16], ethernet_ip[16];
+};
+void sysinfo_read(const char *sysfs_root, struct sysinfo_values *v);
+
 #endif

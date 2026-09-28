@@ -27,17 +27,18 @@ CROSS_CFLAGS := -std=c11 -D_GNU_SOURCE -static -Os -Wall -Wextra -Werror
 HOST_CFLAGS  := -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined
 
 # tt7d: the network display daemon. Modules shared by the daemon and its unit tests.
-TT7D_LIB     := tt7d/json.c tt7d/http.c tt7d/render.c tt7d/sha256.c tt7d/ident.c tt7d/sysinfo.c probe/fbdraw.c
-TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/server.c tt7d/main.c
+TT7D_LIB     := tt7d/json.c tt7d/http.c tt7d/render.c tt7d/sha256.c tt7d/ident.c tt7d/sysinfo.c probe/fbdraw.c \
+                tt7d/server.c tt7d/mqtt_packet.c tt7d/mqtt_config.c tt7d/mqtt_client.c tt7d/mqtt.c
+TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/main.c
 TT7D_HDRS    := $(wildcard tt7d/*.h) probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h third_party/lodepng/lodepng.h
 TT7D_INC     := -Itt7d -Iprobe -I$(FONT_DIR) -Ithird_party/lodepng
 LODEPNG      := third_party/lodepng/lodepng.cpp
 LODEPNG_DEFS := -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP \
                 -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS
 TT7D_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
-TT7D_UNITS   := render json http util sysinfo
+TT7D_UNITS   := render json http util sysinfo mqtt
 
-.PHONY: all image busybox dropbear wifi tt7d test-host test-e2e check clean FORCE
+.PHONY: all image busybox dropbear wifi tt7d test-host test-e2e test-mqtt check clean FORCE
 .DELETE_ON_ERROR:
 
 all: image
@@ -134,15 +135,21 @@ test-host: $(B)/host/test_fbdraw $(B)/host/test_usb_stall $(TT7D_UNITS:%=$(B)/ho
 test-e2e: $(B)/host/tt7d
 	python3 tt7d/test_e2e.py --daemon $(B)/host/tt7d
 
+# The real daemon against a real MQTT broker (amqtt) and client (paho-mqtt),
+# both pinned and run through uv (tt7d/test_mqtt_e2e.py).
+MQTT_TEST_DEPS := --with amqtt==0.12.1 --with paho-mqtt==2.1.0
+test-mqtt: $(B)/host/tt7d
+	uv run --no-project --quiet $(MQTT_TEST_DEPS) python tt7d/test_mqtt_e2e.py --daemon $(B)/host/tt7d
+
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
                  scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \
                  scripts/build-wpa.sh scripts/wifi-setup.sh scripts/test-wifi-setup.sh \
-                 tools/push-frame.sh
+                 tools/push-frame.sh tools/mqtt-setup.sh
 DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh
 # A system shellcheck if there is one, else the pinned PyPI build through uv.
 SHELLCHECK := $(shell command -v shellcheck 2>/dev/null || echo "uvx --from shellcheck-py==0.11.0.1 shellcheck")
 
-check: test-host test-e2e $(IMAGE)
+check: test-host test-e2e test-mqtt $(IMAGE)
 	python3 scripts/check-image.py --image $(IMAGE) --stock $(STOCK_BOOT) --pubkey $(SSH_PUBKEY)
 	@for s in $(SHELL_SCRIPTS); do bash -n $$s || exit 1; done; echo "  ok   bash -n: $(SHELL_SCRIPTS)"
 	@for s in $(DEVICE_SCRIPTS); do sh -n $$s || exit 1; done; echo "  ok   sh -n: $(DEVICE_SCRIPTS)"

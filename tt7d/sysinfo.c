@@ -281,3 +281,33 @@ void sysinfo_backlight(const char *root, int *on, int *percent) {
     if (b >= 0) *on = (b > 0 && power == 0);
     if (b >= 0 && max > 0) *percent = (int)((b * 100 + max / 2) / max);
 }
+
+void sysinfo_read(const char *root, struct sysinfo_values *v) {
+    char battery[NAME_LEN], mains[NAME_LEN], status[32] = "";
+    memset(v, 0, sizeof *v);
+    find_supply(root, "Battery", battery);
+    find_supply(root, "Mains", mains);
+    v->has_battery = battery[0] != 0;
+    v->battery_percent = battery[0] ? (int)read_long(root, "class/power_supply", battery, "capacity", -1) : -1;
+    v->charging = -1;
+    if (battery[0] && read_attr(root, "class/power_supply", battery, "status", status, sizeof status) == 0) {
+        if (!strcmp(status, "Charging")) v->charging = 1;
+        else if (!strcmp(status, "Discharging") || !strcmp(status, "Not charging") || !strcmp(status, "Full"))
+            v->charging = 0;
+    }
+    long online = mains[0] ? read_long(root, "class/power_supply", mains, "online", -1) : -1;
+    v->external_power = online == 1 ? 1 : online == 0 ? 0 : -1;
+
+    struct names bl;
+    list_dir(root, "class/backlight", &bl);
+    v->has_backlight = bl.n > 0;
+    v->backlight_max = bl.n ? (int)read_long(root, "class/backlight", bl.v[0], "max_brightness", -1) : -1;
+    sysinfo_backlight(root, &v->display_on, &v->brightness_percent);
+
+    struct names net;
+    list_dir(root, "class/net", &net);
+    v->has_wifi = has_entry(&net, "wlan0");
+    v->has_ethernet = has_entry(&net, "eth0");
+    if (v->has_wifi) ipv4_of("wlan0", v->wifi_ip, sizeof v->wifi_ip);
+    if (v->has_ethernet) ipv4_of("eth0", v->ethernet_ip, sizeof v->ethernet_ip);
+}
