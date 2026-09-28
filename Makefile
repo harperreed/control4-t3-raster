@@ -41,7 +41,17 @@ LODEPNG_DEFS := -DLODEPNG_NO_COMPILE_ENCODER -DLODEPNG_NO_COMPILE_DISK -DLODEPNG
 TT7D_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
 TT7D_UNITS   := render json http util sysinfo control hardware assets
 
-.PHONY: all image busybox dropbear wifi tt7d test-host test-e2e check clean FORCE
+# cam: camera capture tool for the panel (cam/). A separate static binary, not
+# part of the boot image: copy build/tt7cam to the panel and run it there.
+CAM_LIB   := cam/yuv.c cam/sentinel.c cam/motion.c cam/jpeg.c
+CAM_SRCS  := $(CAM_LIB) cam/capture.c cam/tt7cam.c
+CAM_HDRS  := $(wildcard cam/*.h) third_party/stb/stb_image_write.h
+CAM_INC   := -Icam -Ithird_party/stb
+CAM_UNITS := kabi yuv sentinel motion jpeg
+# Pinned Pillow decodes tt7cam's JPEG in the host end-to-end test.
+CAM_PILLOW := uv run --quiet --no-project --with pillow==12.3.0 python3
+
+.PHONY: all image busybox dropbear wifi tt7d cam test-host test-e2e test-cam check clean FORCE
 .DELETE_ON_ERROR:
 
 all: image
@@ -50,6 +60,7 @@ busybox: $(B)/busybox/busybox
 # Also usable alone: copy build/tt7d to /data/tt7/bin on a running panel (tt7d/README.md).
 tt7d: $(B)/tt7d
 dropbear: $(B)/dropbear/dropbearmulti
+cam: $(B)/tt7cam
 # Also usable alone: copy build/wifi/* to /data/tt7/bin on a running panel.
 wifi: $(B)/wifi/wpa_supplicant
 
@@ -150,6 +161,25 @@ test-host: $(B)/host/test_fbdraw $(B)/host/test_usb_stall $(TT7D_UNITS:%=$(B)/ho
 test-e2e: $(B)/host/tt7d
 	python3 tt7d/test_e2e.py --daemon $(B)/host/tt7d
 
+$(B)/tt7cam: $(CAM_SRCS) $(CAM_HDRS)
+	@mkdir -p $(B)
+	$(CROSS_CC) $(CROSS_CFLAGS) $(CAM_INC) -o $@ $(CAM_SRCS) -lm
+
+$(B)/host/cam_test_%: cam/test_%.c cam/test_common.h $(CAM_LIB) $(CAM_HDRS)
+	@mkdir -p $(B)/host
+	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(CAM_INC) -o $@ $< $(CAM_LIB) -lm
+
+# Host build of the whole tool; only `convert` and argument handling run on the host.
+$(B)/host/tt7cam: $(CAM_SRCS) $(CAM_HDRS)
+	@mkdir -p $(B)/host
+	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(CAM_INC) -o $@ $(CAM_SRCS) -lm
+
+test-cam: $(CAM_UNITS:%=$(B)/host/cam_test_%) $(B)/host/tt7cam $(B)/tt7cam
+	@for t in $(CAM_UNITS); do $(B)/host/cam_test_$$t || exit 1; done
+	$(CAM_PILLOW) cam/test_convert.py --tool $(B)/host/tt7cam
+	@d=$$(file -b $(B)/tt7cam); case "$$d" in *"ARM, EABI5"*"statically linked"*) echo "  ok   $(B)/tt7cam: $$d";; \
+		*) echo "FAIL $(B)/tt7cam is not a static ARM EABI5 executable: $$d"; exit 1;; esac
+
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
                  scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \
                  scripts/build-wpa.sh scripts/wifi-setup.sh scripts/test-wifi-setup.sh \
@@ -158,7 +188,7 @@ DEVICE_SCRIPTS := probe/tt7-app.sh probe/tt7-discover.sh probe/tt7-wifi-start.sh
 # A system shellcheck if there is one, else the pinned PyPI build through uv.
 SHELLCHECK := $(shell command -v shellcheck 2>/dev/null || echo "uvx --from shellcheck-py==0.11.0.1 shellcheck")
 
-check: test-host test-e2e $(IMAGE)
+check: test-host test-e2e test-cam $(IMAGE)
 	python3 scripts/check-image.py --image $(IMAGE) --stock $(STOCK_BOOT) --pubkey $(SSH_PUBKEY)
 	@for s in $(SHELL_SCRIPTS); do bash -n $$s || exit 1; done; echo "  ok   bash -n: $(SHELL_SCRIPTS)"
 	@for s in $(DEVICE_SCRIPTS); do sh -n $$s || exit 1; done; echo "  ok   sh -n: $(DEVICE_SCRIPTS)"
