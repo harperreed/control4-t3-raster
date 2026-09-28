@@ -70,3 +70,10 @@
 - Host side: `sudo scripts/usb-link.sh` once pins the NM profile `tt7-usb` to the USB port path (ID_PATH), so it auto-connects despite the panel's per-boot MAC. Confirmed working across a re-enumeration.
 - **Battery % is unreliable under our firmware:** it read 17% just before a reboot and 53% right after (2026-09-27 19:24), with no charging in between. The 3.0 kernel's fuel gauge seems to estimate from voltage. Don't treat a single reading as truth. Watch the trend, and prefer AC/dock power for long jobs.
 - The watchdog image 00235b6f… rebooted in about 10 s with detached `nohup reboot -f &`. The earlier ~5 min hang happened when reboot ran attached to the ssh session (cause unverified).
+
+## tt7d (2026-09-27, branch tt7d-m1-m2; built and host-tested only)
+- The TT7's fb driver puts Rockchip-private values in `grayscale` (1342382080) and `nonstd` (4). Read the pixel format from the red/green/blue bitfields only; a generic "grayscale != 0 means grey" check would misfire.
+- init looks for the app overlay `/data/tt7/app` only once, when its worker starts at boot. A newly copied overlay needs a reboot. tt7-app puts `/data/tt7/bin` first on PATH and restarts tt7d in a loop, so `killall tt7d` picks up a new `/data/tt7/bin/tt7d` without a reboot (tt7d/README.md).
+- curl sends `Expect: 100-continue` for bodies over about 1 MB and waits up to 1 s if the server ignores it. tt7d answers it, after checking the token and size.
+- tt7d logs only failed requests. Its log is `/data/tt7/app.log` on flash, and a per-frame log line would turn every pushed frame into a flash write.
+- tt7d's default `--rotation 90` (logical top-left → fb top-right) is a guess until someone photographs `tools/make-test-frame.py` output on the dock.
