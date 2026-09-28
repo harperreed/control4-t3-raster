@@ -1,7 +1,7 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: tt7d M1+M2 built on branch tt7d-m1-m2 (make check 119 ok; e2e on file-backed fb). Not yet on the panel. M0 dump still PAUSED at system chunk 8/16 (needs dock power)
+- Step: M4 control panel (tt7d 6bc0922) deployed to the panel via /data/tt7/bin overlay, live at http://192.168.23.197/. M5 MQTT + M6 HA being built in a worktree (branch tt7d-m5-mqtt). M0 dump still PAUSED at system chunk 8/16
 - Next: when docked on its power adapter: resume `scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27 system`, then cache/userdata/user; verify the watchdog fixes a real stall (usb-watchdog.log). Then docs/hardware-inventory.md + recovery doc (closes M0), then tt7d M1/M2
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
@@ -49,6 +49,7 @@ Architecture per those files: `boot.img` = stock kernel + our gzipped cpio ramdi
 - Dev loop: `sim/` headless renderer on the PC → scp the binary to `/data` → restart the app.
 
 ## Log
+- 2026-09-27: M4 panel on device: /, /hardware, /logs (kernel log via klogctl works), auth 401 without token. Rollback: /data/tt7/bin/tt7d.bak.
 - 2026-09-27: tt7d M1+M2 built: PUT/GET frame (PNG, lodepng), info/state, token auth, dedup, persist, rotation flag. Host e2e green. docs/hardware-inventory.md written.
 - 2026-09-27: Watchdog+Wi-Fi image (5812654f…) flashed over Wi-Fi and booted; auto-joins Wi-Fi. `reboot -f` takes ~5 min.
 - 2026-09-27: Probe image booted on TT7 (glassedge7p, fb 800x1280 RGB565, gslX680 touch). USB gadget resets killed the first kernel dump; Wi-Fi (nl80211) works. Kernel-side reads: misc/boot/recovery/backup stable, `kernel` mtd1 differed between two reads (to investigate).
