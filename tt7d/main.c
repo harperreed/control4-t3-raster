@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "display.h"
+#include "events.h"
 #include "frame.h"
 #include "ident.h"
 #include "mqtt.h"
@@ -36,6 +37,7 @@ struct config {
     const char *proc_root;
     const char *log_file;
     const char *reboot_cmd;
+    const char *input_dir;
     size_t max_frame_bytes;
     int timeout_ms;
     const char *mqtt_flags[2 * MQF_COUNT]; /* --mqtt-KEY VALUE, as key/value pairs */
@@ -49,6 +51,7 @@ struct app {
     struct frame_store frames;
     struct panel panel;
     struct mqtt_app mqtt;
+    struct events events;
     char token[256];
     char device_id[32]; /* "" if device.json is unusable: reported as null */
     struct timespec started;
@@ -71,6 +74,8 @@ static void usage(FILE *out) {
             "  --log-file PATH           tt7d's own log, for GET /api/v1/logs (default /data/tt7/app.log,\n"
             "                            where tt7-app sends tt7d's output)\n"
             "  --reboot-cmd CMD          run with /bin/sh -c by POST /api/v1/system/reboot (default 'reboot -f')\n"
+            "  --input-dir PATH          where the evdev eventN nodes are (default /dev/input); --sysfs-root's\n"
+            "                            class/input names them. Host tests point it at FIFOs (tt7d/README.md)\n"
             "  --max-frame-bytes N       largest accepted PNG (default 8388608)\n"
             "  --request-timeout-ms N    time to receive a request, and to send its reply (default 30000)\n"
             "  --mqtt-KEY VALUE          override one <data-dir>/mqtt.conf setting (tt7d/README.md): enabled,\n"
@@ -91,7 +96,7 @@ static int parse_uint(const char *s, unsigned long max, unsigned long *out) {
 static int parse_args(int argc, char **argv, struct config *c) {
     *c = (struct config){.listen = "0.0.0.0:80", .fb = "/dev/fb0", .rotation = 90, .data_dir = "/data/tt7/tt7d",
                          .sysfs_root = "/sys", .proc_root = "/proc", .log_file = "/data/tt7/app.log",
-                         .reboot_cmd = "reboot -f", .max_frame_bytes = 8u << 20, .timeout_ms = 30000};
+                         .reboot_cmd = "reboot -f", .input_dir = "/dev/input", .max_frame_bytes = 8u << 20, .timeout_ms = 30000};
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) {
@@ -118,6 +123,7 @@ static int parse_args(int argc, char **argv, struct config *c) {
         else if (!strcmp(a, "--proc-root")) c->proc_root = v;
         else if (!strcmp(a, "--log-file")) c->log_file = v;
         else if (!strcmp(a, "--reboot-cmd") && *v) c->reboot_cmd = v;
+        else if (!strcmp(a, "--input-dir")) c->input_dir = v;
         else if (!strcmp(a, "--fb-stride") && parse_uint(v, 1u << 20, &n) == 0) c->fb_stride = (unsigned)n;
         else if (!strcmp(a, "--rotation") && parse_uint(v, 270, &n) == 0 && render_rotation_valid((int)n))
             c->rotation = (int)n;
@@ -173,10 +179,12 @@ static void info_json(struct app *a, struct sbuf *sb) {
               render_format_name(&d->back), d->back.stride, d->back.bpp);
     sb_puts(sb, ",\"capabilities\":{");
     sysinfo_capabilities(sb, a->cfg.sysfs_root);
+    sb_puts(sb, ",");
+    events_info_member(&a->events, sb);
     sb_puts(sb, "},\"auth\":{\"scheme\":\"bearer\",\"required_for\":[\"PUT /api/v1/frame\",\"GET /api/v1/logs\","
                 "\"PUT /api/v1/display/brightness\",\"POST /api/v1/display/blank\",\"POST /api/v1/display/wake\","
                 "\"POST /api/v1/display/test-pattern\",\"POST /api/v1/system/reboot\",\"GET /api/v1/config/mqtt\","
-                "\"PUT /api/v1/config/mqtt\"]}}");
+                "\"PUT /api/v1/config/mqtt\",\"GET /api/v1/events\"]}}");
 }
 
 static double seconds_since(const struct timespec *t, clockid_t clock) {
@@ -214,6 +222,8 @@ static void state_json(struct app *a, struct sbuf *sb) {
     sb_json_str(sb, fs->last_error);
     sb_puts(sb, "},");
     mqtt_app_state_member(&a->mqtt, sb);
+    sb_puts(sb, ",");
+    events_state_member(&a->events, sb);
     sb_puts(sb, "}");
 }
 
@@ -255,7 +265,9 @@ static int allowed(const char *allow, const char *method) {
 
 static int app_check_head(void *ctx, const struct http_request *req, struct response *resp) {
     struct app *a = ctx;
-    int rc = panel_check_head(&a->panel, req, resp);
+    int rc = events_check_head(&a->events, req, resp);
+    if (rc != EVENTS_NOT_MINE) return rc;
+    rc = panel_check_head(&a->panel, req, resp);
     if (rc != PANEL_NOT_MINE) return rc;
     int i = find_route(req->path);
     if (i < 0) {
@@ -315,11 +327,23 @@ static int mqtt_blank(void *ctx) { return panel_blank(ctx) == PANEL_OK ? 0 : -1;
 static int mqtt_wake(void *ctx) { return panel_wake(ctx) == PANEL_OK ? 0 : -1; }
 static int mqtt_reboot(void *ctx) { return panel_reboot(ctx) == PANEL_OK ? 0 : -1; }
 
-static void app_poll_prepare(void *ctx, struct pollfd *pfd, int64_t *wait_ms) {
-    mqtt_app_prepare(&((struct app *)ctx)->mqtt, pfd, wait_ms);
+/* Poll entries: the MQTT socket first (fd -1 when there is none, which
+ * poll() skips), then the input devices and WebSocket clients. */
+static int app_poll_prepare(void *ctx, struct pollfd *pfd, int max, int64_t *wait_ms) {
+    struct app *a = ctx;
+    mqtt_app_prepare(&a->mqtt, &pfd[0], wait_ms);
+    return 1 + events_prepare(&a->events, pfd + 1, max - 1, wait_ms);
 }
 
-static void app_poll_service(void *ctx, short revents) { mqtt_app_service(&((struct app *)ctx)->mqtt, revents); }
+static void app_poll_service(void *ctx, const struct pollfd *pfd, int n) {
+    struct app *a = ctx;
+    mqtt_app_service(&a->mqtt, pfd[0].revents);
+    events_service(&a->events, pfd + 1, n - 1);
+}
+
+static int app_take_over(void *ctx, int fd, const struct http_request *req) {
+    return events_take_over(&((struct app *)ctx)->events, fd, req);
+}
 
 int main(int argc, char **argv) {
     static struct app a;
@@ -375,10 +399,15 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    /* Input after MQTT (button events go there too); like MQTT, a missing
+     * device never stops the display. */
+    events_init(&a.events, a.cfg.input_dir, a.cfg.sysfs_root, &a.disp, &a.frames, &a.mqtt, a.token, a.device_id);
+
     struct server_config sc = {.listen = a.cfg.listen, .max_head = 8192, .max_body = a.cfg.max_frame_bytes,
                                .timeout_ms = a.cfg.timeout_ms, .max_connections = 8};
     struct server_handlers h = {.ctx = &a, .check_head = app_check_head, .handle = app_handle, .on_reply = app_on_reply,
-                                .poll_prepare = app_poll_prepare, .poll_service = app_poll_service};
+                                .poll_prepare = app_poll_prepare, .poll_service = app_poll_service,
+                                .take_over = app_take_over};
     server_run(&sc, &h, err, sizeof err);
     fprintf(stderr, "tt7d: %s\n", err);
     return 1;
