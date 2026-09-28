@@ -149,13 +149,23 @@ class Observer:
         self.c.disconnect()
 
 
-def retained_snapshot(broker, user=None, password=None, settle=1.5):
-    """Every retained message the broker hands a brand-new subscriber: {topic: payload}."""
+def retained_snapshot(broker, user=None, password=None, until=None, settle=1.5, timeout=15.0):
+    """The retained messages the broker hands a brand-new subscriber: {topic: payload}.
+
+    With `until`, collects until until(snapshot) is true (or timeout), then
+    0.5 s more so the rest of the burst arrives too; without it, for
+    `settle` seconds."""
     o = Observer(broker, user, password, name="snapshot")
-    time.sleep(settle)
-    msgs = o.drain()
+    snap = {}
+    deadline = time.monotonic() + (timeout if until else settle)
+    while time.monotonic() < deadline:
+        snap.update({t: p for t, p, retain in o.drain() if retain})
+        if until and until(snap):
+            until = None
+            deadline = time.monotonic() + 0.5
+        time.sleep(0.05)
     o.close()
-    return {t: p for t, p, retain in msgs if retain}
+    return snap
 
 
 class Tt7d(test_e2e.Daemon):
@@ -209,7 +219,10 @@ def test_connect_state_and_boot(d, obs, base):
     assert doc["brightness"] == 50 and doc["frame_id"] is None and doc["frame_age_s"] is None, doc
     assert doc["charging"] is False and doc["last_touch"] is None, doc
 
-    snap = retained_snapshot(obs.broker)
+    # Everything tt7d announces at connect, discovery included.
+    snap = retained_snapshot(obs.broker, until=lambda s: s.get(f"{base}/availability") == "online"
+                             and f"{base}/state" in s and f"{base}/sensor/battery_percent" in s
+                             and sum(t.startswith("homeassistant/") for t in s) >= 6)
     assert snap.get(f"{base}/availability") == "online", "availability 'online' is not retained"
     assert set(json.loads(snap[f"{base}/state"])) == STATE_KEYS, "state is not retained"
     assert snap.get(f"{base}/sensor/battery_percent") == "82", snap.get(f"{base}/sensor/battery_percent")
@@ -290,7 +303,8 @@ def test_lwt(d, obs, base):
     obs.drain()
     d.kill()
     payload, _ = obs.expect(f"{base}/availability", lambda p, r: p == "offline", timeout=10)
-    assert retained_snapshot(obs.broker).get(f"{base}/availability") == "offline", "the will is not retained"
+    snap = retained_snapshot(obs.broker, until=lambda s: s.get(f"{base}/availability") == "offline")
+    assert snap.get(f"{base}/availability") == "offline", "the will is not retained"
     d.start()
     obs.expect(f"{base}/availability", lambda p, r: p == "online")
 
@@ -313,8 +327,8 @@ def test_broker_down_and_back(d, obs, broker, base):
     wait_for("tt7d to reconnect", lambda: d.mqtt_state()["connected"], timeout=40)
     assert d.mqtt_state()["reconnects"] >= 1
     obs.expect(f"{base}/availability", lambda p, r: p == "online", timeout=20)
-    snap = retained_snapshot(broker)
-    assert snap.get(f"{base}/availability") == "online" and f"{base}/state" in snap, "not re-announced after restart"
+    snap = retained_snapshot(broker, until=lambda s: s.get(f"{base}/availability") == "online" and f"{base}/state" in s)
+    assert snap.get(f"{base}/availability") == "online" and f"{base}/state" in snap, f"not re-announced: {snap}"
 
 
 def test_config_api(d, broker_a, broker_b, workdir, base):
@@ -369,10 +383,10 @@ def test_config_api(d, broker_a, broker_b, workdir, base):
     obs_b.expect(f"{base}/availability", lambda p, r: p == "online", timeout=20)
     wait_for("tt7d on broker B", lambda: d.mqtt_state()["broker"] == f"127.0.0.1:{broker_b.port}"
              and d.mqtt_state()["connected"])
-    snap_b = retained_snapshot(broker_b, USER, PASSWORD)
+    snap_b = retained_snapshot(broker_b, USER, PASSWORD, until=lambda s: any(t.startswith("homeassistant/sensor/") for t in s))
     assert any(t.startswith("homeassistant/sensor/") for t in snap_b), "no discovery on the new broker"
     # The old broker was told: offline, and no discovery left behind.
-    snap_a = retained_snapshot(broker_a)
+    snap_a = retained_snapshot(broker_a, until=lambda s: s.get(f"{base}/availability") == "offline")
     assert snap_a.get(f"{base}/availability") == "offline", snap_a
     assert not any(t.startswith("homeassistant/") for t in snap_a), [t for t in snap_a if t.startswith("homeassistant/")]
     obs_a.close()
