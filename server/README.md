@@ -1,9 +1,9 @@
 # tt7-server: the backend that drives N tt7 panels
 
 tt7-server makes each tt7 panel show a web page. It runs one headless Chrome
-with one tab per panel, pushes what the tab paints to the panel as PNG frames
-(tt7d `PUT /api/v1/frame`), and turns touches on the glass into real mouse
-clicks in that tab. Any URL works: the server is a remote browser (the plan's
+with one tab per panel, pushes what the tab paints to the panel (the changed
+rectangles with tt7d `PATCH /api/v1/frame`, or a whole PNG with `PUT`), and
+turns touches on the glass into real mouse clicks in that tab. Any URL works: the server is a remote browser (the plan's
 approved decision, docs/superpowers/plans/2026-09-28-tt7-server.md).
 
 Milestone S1: built and tested on the host against host-built tt7d daemons.
@@ -30,7 +30,7 @@ Admin API (JSON; errors are `{"error": "<code>", "message": ...}`):
 | Endpoint | Does |
 |---|---|
 | `GET /` | The admin page: status, URL, reload, and preview for each screen |
-| `GET /api/screens` | `{"screens": [...]}`: `name`, `host`, `url`, `enabled`, `reachable`, `events_connected`, `device_id`, `last_push_at`, `last_frame_id`, `frames_pushed`, `last_error`, `last_error_at` (null when unknown) |
+| `GET /api/screens` | `{"screens": [...]}`: `name`, `host`, `url`, `enabled`, `reachable`, `events_connected`, `device_id`, `last_push_at`, `last_frame_id`, `frames_pushed`, `last_error`, `last_error_at` (null when unknown); frame traffic: `bytes_sent` (bodies the panel accepted), `full_frames`, `region_frames`, `base_mismatches` (PATCHes the panel refused with 409), `last_update` (`full`/`regions`), `last_region_count`, `last_push_bytes`, `last_push_ms` (the last accepted request, send to reply) |
 | `PUT /api/screens/{name}/url` | Body `{"url": "https://..."}`. Saves it to screens.toml, then navigates. 400 `invalid_url`, 404 `no_such_screen`, 500 `save_failed` |
 | `POST /api/screens/{name}/reload` | Reloads the page (409 `reload_failed` on a disabled screen) |
 | `GET /api/screens/{name}/preview.png` | The last frame the panel accepted (404 `no_frame`) |
@@ -46,7 +46,9 @@ screens.toml ──► tt7-server
                   │    Page.startScreencast (PNG) ──► screen.OnFrame (keeps only the newest)
                   ├ per screen, three goroutines:
                   │    push loop:  newest capture → skip if same SHA-256 as on the panel
-                  │                → wait out 1/max_fps → PUT /api/v1/frame (X-Frame-ID, X-Frame-SHA256, X-Persist: false)
+                  │                → wait out 1/max_fps (not for the first capture after a touch down/up)
+                  │                → diff against the panel's pixels: small change → PATCH /api/v1/frame (regions)
+                  │                  else, or refused → PUT /api/v1/frame (X-Frame-ID, X-Frame-SHA256, X-Persist: false)
                   │                  failure: backoff 1 s → 60 s, cut short when the panel comes back
                   │    heartbeat:  POST /api/v1/heartbeat (Content-Length: 0) every heartbeat_s;
                   │                  fallback.active in the reply → re-push the frame
@@ -58,6 +60,33 @@ screens.toml ──► tt7-server
 ```
 
 - **Frame ids** are `<screen>-<8 hex per server start>-<counter>`.
+- **Region updates** (SPEC §10.1). The push loop keeps the RGBA of the frame
+  the panel is known to show (its base), with that frame's id and sha256.
+  Each capture is decoded and compared with the base exactly, in 32×32
+  tiles; touching changed tiles make a group, each group's bounding box is
+  a rectangle, and rectangles are merged (overlapping first, then the pair
+  whose union adds the least unchanged area) until at most 4 remain. No
+  padding for antialiasing is needed: the compare is exact, so a pixel that
+  moved by one level is a changed pixel, and its tile covers it. Each
+  rectangle is encoded as a PNG (Go's `BestSpeed`: 0.5 ms and 511 bytes for
+  a 256×128 button here, against 0.76 ms and 480 bytes at the default
+  level) and the batch goes as one PATCH with `X-Base-Frame-ID` and the
+  expected `X-Frame-SHA256`. A full PUT goes instead when the base is
+  unknown (start, a `hello`, a fallback reported by a heartbeat, any push
+  error), when the rectangles cover more than `region_max_fraction` of the
+  screen (per screen, default 0.5; 0 turns regions off), or when the
+  container would not be smaller than the PNG. Pixels identical to the base
+  send nothing.
+- **Refused regions.** 409 `base_mismatch` (the panel restarted, shows its
+  fallback clock, or someone else PUT a frame) counts in `base_mismatches`
+  and is followed at once by a full PUT, which becomes the new base. Any
+  other refusal does the same. A panel that answers PATCH with 404, 405 or
+  415 (a tt7d from before region updates) gets full frames until its event
+  stream reconnects.
+- **A touch's result goes at once.** Each touch down and each touch up
+  lets one capture (within 1 s) skip the `max_fps` wait: the pressed look,
+  then the result. Duplicates are still skipped, and at most two are owed
+  at a time. Otherwise the rate limit holds as before.
 - **Touches:** tt7d already sends logical 1280×800 coordinates, so x/y go to
   Chrome unchanged (clamped to the page). The first finger down drives the
   mouse until it lifts; other fingers are ignored. If the stream drops while
@@ -108,10 +137,18 @@ found so far). The admin **Reload** button is the manual way out.
 ### Measured in the e2e test (this box, 2026-09-28)
 
 - Touch written into a panel's input FIFO → new frame in its framebuffer:
-  about 290-340 ms for the first tap, 130-195 ms for later ones (5 runs).
-  That covers tt7d → WebSocket → CDP click → paint → screencast → pacer →
-  PUT → tt7d decode → fb, all on localhost. A real panel adds Wi-Fi and the
-  ARM decode time.
+  about 290-340 ms for the first tap, 130-195 ms for later ones (5 runs),
+  before region updates and the touch bypass. That covers tt7d → WebSocket →
+  CDP click → paint → screencast → pacer → PUT → tt7d decode → fb, all on
+  localhost. A real panel adds Wi-Fi and the ARM decode time.
+- With region updates and the touch bypass, on the dashboard page (a busy
+  1280×620 area above a 200×100 button; a full frame is about 135 KB):
+  panel C (regions) 42-98 ms and 0.8-1.4 KB per tap; panel D, the same page
+  with `region_max_fraction = 0` in the same run, 155-239 ms and about
+  135 KB per tap (2 runs). The counter page (a 800×600 button, 49% of the
+  screen in tiles, so still regions, about 8 KB): 93-146 ms, against
+  198-329 ms on main in the same box. Localhost only, with the host tt7d built with ASan; the panel's
+  Wi-Fi and A9 will differ.
 - Chrome for 2 idle screens: 14 processes, about 450 MiB PSS, 0.6% of one core.
 - Panel restart → frame back: 0.3-0.7 s.
 
@@ -136,7 +173,12 @@ make server-check   # go vet, go test (units), then server/test_server_e2e.py
   fields, bad host, bad URL, token file modes, duplicate names and hosts,
   unknown keys), the example config, URL write-back (comments kept,
   refusals leave the file alone), backoff, the pacer (dedup, max_fps,
-  Forget), touch → mouse mapping, and the admin API's auth and errors.
+  Forget, the touch bypass), touch → mouse mapping, the admin API's auth
+  and errors, and regions: the tile diff on known images (one change, two
+  far apart, six merged into four, faint edge changes, random changes always
+  covered, full frame above the fraction), the container codec, and the
+  golden vector shared with tt7d (`tt7d/test/fixtures/regions-v1.*`; rewrite
+  it with `go test ./internal/regions -run TestGoldenVector -update`).
 - **End to end** (`server/test_server_e2e.py`, no mocks): two host-built
   tt7d daemons on file-backed 800×1280 RGB565 framebuffers with the panel's
   sysfs fixture and input FIFOs (the tt7d e2e harness), a real Chrome, and a
@@ -148,11 +190,22 @@ make server-check   # go vet, go test (units), then server/test_server_e2e.py
   getting their frame back, the admin API (list, URL change with pixels and
   screens.toml checked, preview bytes equal to the panel's frame), and
   panel A getting its frames while B is hung (SIGSTOP) and while B is down.
+  Two more panels show a dashboard page: C with region updates, D with
+  `region_max_fraction = 0`. A tap on C must go as regions under a tenth of a
+  full frame, and afterwards C's framebuffer and `/frame/image` must equal the
+  page Chrome painted (decoded with pinned Pillow, rotated here). A frame PUT
+  to C by someone else, then C's fallback clock (heartbeat_s 60), must each
+  turn the next tap into a 409 and a full frame; a restart of C must resync
+  it in full, and taps after each must be regions again. B's navigation to
+  another page must be a full frame.
 - The e2e needs Chrome at `CHROME` (default agent-browser's). If it isn't
   there, the test **fails**; it never skips.
 
 ## Unverified
 
+- Region updates on the real panels: the gain over Wi-Fi and on the A9's
+  decode, and pages whose changes are large or scattered (4 rectangles merge
+  them, at the cost of sending some unchanged pixels).
 - Everything against real panels over Wi-Fi (S2): latency, and how the
   panels' 8-connection HTTP limit behaves next to the control panel.
 - Long runs: Chrome memory growth over days, and pages that leak.

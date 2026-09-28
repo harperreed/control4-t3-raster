@@ -140,6 +140,7 @@ static void test_body_framing(void) {
           "both TE and CL");
     CHECK(body_status("PUT / HTTP/1.1\r\n\r\n", 100, &len) == 411, "PUT without length");
     CHECK(body_status("POST / HTTP/1.1\r\n\r\n", 100, &len) == 411, "POST without length");
+    CHECK(body_status("PATCH / HTTP/1.1\r\n\r\n", 100, &len) == 411, "PATCH without length");
     CHECK(body_status("PUT / HTTP/1.1\r\nContent-Length: -1\r\n\r\n", 100, &len) == 400, "negative");
     CHECK(body_status("PUT / HTTP/1.1\r\nContent-Length: 1x\r\n\r\n", 100, &len) == 400, "junk");
     CHECK(body_status("PUT / HTTP/1.1\r\nContent-Length: \r\n\r\n", 100, &len) == 400, "empty");

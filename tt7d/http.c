@@ -141,7 +141,8 @@ int http_body_length(const struct http_request *req, size_t max_body, size_t *le
     }
     if (has_te) return cl ? 400 : 411;
     if (!cl) {
-        if (strcmp(req->method, "PUT") == 0 || strcmp(req->method, "POST") == 0) return 411;
+        if (strcmp(req->method, "PUT") == 0 || strcmp(req->method, "POST") == 0 || strcmp(req->method, "PATCH") == 0)
+            return 411;
         *len = 0;
         return 0;
     }

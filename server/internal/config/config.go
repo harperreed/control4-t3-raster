@@ -21,6 +21,8 @@ const (
 	DefaultListen     = "127.0.0.1:7788"
 	DefaultMaxFPS     = 5
 	DefaultHeartbeatS = 60
+	// DefaultRegionMaxFraction: above this share of the screen changed, a full frame goes instead of regions.
+	DefaultRegionMaxFraction = 0.5
 )
 
 // Config is screens.toml after validation. Paths are absolute and tokens are loaded.
@@ -44,6 +46,9 @@ type Screen struct {
 	URL        string
 	Enabled    bool
 	HeartbeatS int
+	// RegionMaxFraction is the largest share of the screen (0..1) sent as changed regions (PATCH);
+	// more than that goes as a full frame. 0 sends full frames only.
+	RegionMaxFraction float64
 }
 
 // fileConfig mirrors the TOML. Pointers tell "absent" from a zero value.
@@ -63,6 +68,8 @@ type fileScreen struct {
 	URL        string `toml:"url"`
 	Enabled    *bool  `toml:"enabled"`
 	HeartbeatS *int   `toml:"heartbeat_s"`
+	// A float; TOML's integers 0 and 1 are accepted too.
+	RegionMaxFraction any `toml:"region_max_fraction"`
 }
 
 // Screen names end up in admin URLs (/api/screens/{name}) and frame ids.
@@ -153,7 +160,8 @@ func parse(path, text string) (*Config, error) {
 }
 
 func checkScreen(dir string, i int, fs fileScreen) (Screen, error) {
-	s := Screen{Name: fs.Name, URL: fs.URL, Enabled: true, HeartbeatS: DefaultHeartbeatS}
+	s := Screen{Name: fs.Name, URL: fs.URL, Enabled: true, HeartbeatS: DefaultHeartbeatS,
+		RegionMaxFraction: DefaultRegionMaxFraction}
 	if s.Name == "" {
 		return s, fmt.Errorf("screen %d: name is required", i+1)
 	}
@@ -190,6 +198,18 @@ func checkScreen(dir string, i int, fs fileScreen) (Screen, error) {
 	}
 	if s.HeartbeatS < 1 || s.HeartbeatS > 3600 {
 		return s, fmt.Errorf("%s: heartbeat_s %d: must be 1..3600 seconds", where, s.HeartbeatS)
+	}
+	switch v := fs.RegionMaxFraction.(type) {
+	case nil:
+	case float64:
+		s.RegionMaxFraction = v
+	case int64:
+		s.RegionMaxFraction = float64(v)
+	default:
+		return s, fmt.Errorf("%s: region_max_fraction %v: must be a number from 0 to 1", where, v)
+	}
+	if s.RegionMaxFraction < 0 || s.RegionMaxFraction > 1 {
+		return s, fmt.Errorf("%s: region_max_fraction %v: must be 0..1 (0 sends full frames only)", where, s.RegionMaxFraction)
 	}
 	return s, nil
 }

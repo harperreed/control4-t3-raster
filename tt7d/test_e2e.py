@@ -191,6 +191,7 @@ def test_info_and_empty_state(d):
     disp = info["display"]
     assert (disp["width"], disp["height"], disp["rotation"]) == (1280, 800, 90), disp
     assert disp["frame_formats"] == ["image/png"]
+    assert disp["frame_patch"] == {"content_type": "application/x-tt7-regions", "version": 1, "max_regions": 16}
     assert disp["native"] == {"width": 800, "height": 1280, "format": "rgb565", "stride": 1600,
                               "bits_per_pixel": 16}, disp["native"]
     caps = info["capabilities"]
@@ -205,7 +206,8 @@ def test_info_and_empty_state(d):
     assert state["display"]["frame_id"] is None and state["display"]["frame_age_s"] is None, state["display"]
     assert state["display"]["brightness"] == {"value": 50, "unit": "percent", "available": True}
     assert state["power"]["battery_percent"]["estimate"] is True
-    assert state["frames"] == {"accepted": 0, "deduplicated": 0, "rejected": 0, "last_error": None}
+    assert state["frames"] == {"accepted": 0, "region_updates": 0, "deduplicated": 0, "rejected": 0,
+                               "last_error": None}, state["frames"]
     assert state["fallback"] == {"active": False, "reason": None, "timeout_s": 0, "since": None}, state["fallback"]
     assert state["clock"]["timezone"] == "CST6CDT,M3.2.0,M11.1.0" and state["clock"]["format"] == "24h", state["clock"]
     assert isinstance(state["uptime_s"], (int, float)) and re.fullmatch(r"\d{4}-\d\d-\d\dT.*Z", state["time"])
@@ -382,6 +384,148 @@ def test_persist_and_restart(d):
     assert status == 200 and image == png
 
 
+# ---- PATCH /api/v1/frame: regions (SPEC §10.1) --------------------------------
+
+REGIONS_TYPE = "application/x-tt7-regions"
+GOLDEN = os.path.join(HERE, "test", "fixtures", "regions-v1.bin")
+
+
+def regions_body(regions):
+    """The container, written here from SPEC §10.1: "TT7R", version 1, reserved 0, count (u16),
+    then x, y, w, h (u16) and png_len (u32) per region, then the PNGs; all big-endian."""
+    head = b"TT7R" + bytes([1, 0]) + struct.pack(">H", len(regions))
+    recs = b"".join(struct.pack(">HHHHI", x, y, w, h, len(png)) for x, y, w, h, png in regions)
+    return head + recs + b"".join(png for *_, png in regions)
+
+
+def parse_regions_body(body):
+    n = struct.unpack(">H", body[6:8])[0]
+    off, out = 8 + 12 * n, []
+    for i in range(n):
+        x, y, w, h, size = struct.unpack(">HHHHI", body[8 + 12 * i:20 + 12 * i])
+        out.append((x, y, w, h, body[off:off + size]))
+        off += size
+    assert off == len(body)
+    return out
+
+
+def region_sha(base_sha, body):
+    """The patched frame's SHA-256: sha256(lowercase hex of the base frame's sha256 + the body)."""
+    return hashlib.sha256(base_sha.lower().encode() + body).hexdigest()
+
+
+def compose(pixels, regions_pixels):
+    """Apply (x, y, w, h, rgba) regions in order to logical RGBA pixels, here in Python."""
+    out = bytearray(pixels)
+    for x, y, w, h, rgba in regions_pixels:
+        for row in range(h):
+            o = ((y + row) * LOGICAL_W + x) * 4
+            out[o:o + w * 4] = rgba[row * w * 4:(row + 1) * w * 4]
+    return bytes(out)
+
+
+def patch_frame(d, body, base, token=True, **extra):
+    headers = {"Content-Type": REGIONS_TYPE, "X-Base-Frame-ID": base}
+    if token:
+        headers["Authorization"] = f"Bearer {d.token()}"
+    headers.update(extra)
+    return d.request("PATCH", "/api/v1/frame", body=body, headers=headers)
+
+
+def test_patch_container_matches_golden():
+    """This test's encoder rebuilds the shared golden vector byte for byte (tt7d and the Go server check it too)."""
+    with open(GOLDEN, "rb") as f:
+        golden = f.read()
+    assert regions_body(parse_regions_body(golden)) == golden, "the e2e encoder drifted from the golden vector"
+
+
+def test_patch_regions(d):
+    """A PUT, then PATCHes onto it: pixels, metadata, /frame/image, every refusal leaving the screen alone."""
+    base_pixels = random_image(20)
+    base_png = png_bytes(LOGICAL_W, LOGICAL_H, base_pixels)
+    jbody(*d.put_frame(base_png, **{"X-Frame-ID": "base-1"})[::2], 200)
+    accepted = jbody(*d.request("GET", "/api/v1/state")[::2], 200)["frames"]
+
+    # Two regions: a 300x200 block and a corner strip that overlaps nothing; RGBA and RGB PNGs.
+    a_rgba, b_rgb = random_image(21, w=300, h=200), random_image(22, channels=3, w=64, h=800)
+    b_rgba = b"".join(b_rgb[i:i + 3] + b"\xff" for i in range(0, len(b_rgb), 3))
+    body = regions_body([(100, 50, 300, 200, png_bytes(300, 200, a_rgba)),
+                         (1216, 0, 64, 800, png_bytes(64, 800, b_rgb, channels=3))])
+    want = compose(base_pixels, [(100, 50, 300, 200, a_rgba), (1216, 0, 64, 800, b_rgba)])
+    sha = region_sha(hashlib.sha256(base_png).hexdigest(), body)
+    doc = jbody(*patch_frame(d, body, "base-1", **{"X-Frame-ID": "patch-1", "X-Frame-SHA256": sha})[::2], 200)
+    assert doc["frame_id"] == "patch-1" and doc["sha256"] == sha and doc["updated_via"] == "regions", doc
+    assert doc["regions"] == 2 and doc["bytes"] == len(body) and doc["deduplicated"] is False, doc
+    assert doc["persisted"] is False and doc["content_type"] == "image/png", doc
+    assert d.fb_bytes() == expected_fb(want), "framebuffer != base + regions, independently rotated"
+    state = jbody(*d.request("GET", "/api/v1/state")[::2], 200)
+    assert state["display"]["frame_id"] == "patch-1", state["display"]  # what events carry as frame_id
+    assert state["frames"]["accepted"] == accepted["accepted"] + 1, state["frames"]
+    assert state["frames"]["region_updates"] == accepted["region_updates"] + 1, state["frames"]
+
+    # /frame/image is the composed frame, encoded on request (RGB, filter 0 on every row).
+    status, headers, image = d.request("GET", "/api/v1/frame/image")
+    assert status == 200 and headers["content-type"] == "image/png"
+    pixels, channels = unfiltered_png_pixels(image)
+    assert channels == 3 and pixels == b"".join(want[i:i + 3] for i in range(0, len(want), 4)), "image != composed"
+    assert d.request("GET", "/api/v1/frame/image")[2] == image, "the encoded image was not kept"
+
+    # Refusals: each leaves the framebuffer, the id and the counters of accepted frames alone.
+    fb, small = d.fb_bytes(), png_bytes(8, 8, random_image(23, w=8, h=8))
+    doc = check_error(patch_frame(d, regions_body([(0, 0, 8, 8, small)]), "base-1"), 409, "base_mismatch")
+    assert doc["current_frame_id"] == "patch-1", doc
+    check_error(patch_frame(d, regions_body([(0, 0, 8, 8, small)]), "patch-1", token=False), 401, "unauthorized")
+    check_error(patch_frame(d, regions_body([(0, 0, 8, 8, small)]), "patch-1", **{"Content-Type": "image/png"}),
+                415, "unsupported_media_type")
+    check_error(d.request("PATCH", "/api/v1/frame", body=b"x", headers={
+        "Authorization": f"Bearer {d.token()}", "Content-Type": REGIONS_TYPE}), 400, "missing_base_frame_id")
+    check_error(patch_frame(d, regions_body([(0, 0, 8, 8, small)]), "patch-1", **{"X-Persist": "true"}),
+                400, "persist_not_supported")
+    check_error(patch_frame(d, regions_body([(0, 0, 8, 8, small)]), "patch-1", **{"X-Frame-SHA256": "0" * 64}),
+                400, "sha256_mismatch")
+    doc = check_error(patch_frame(d, regions_body([(1275, 0, 8, 8, small)]), "patch-1"), 422, "region_out_of_bounds")
+    assert doc["region"] == 0, doc
+    check_error(patch_frame(d, regions_body([(0, 0, 8, 8, small)] * 17), "patch-1"), 400, "too_many_regions")
+    check_error(patch_frame(d, regions_body([(0, 0, 8, 8, small)])[:-1], "patch-1"), 400, "invalid_regions")
+    # Atomic: region 0 is good, region 1 is 8x8 but claims 8x9. Neither may reach the screen.
+    doc = check_error(patch_frame(d, regions_body([(0, 0, 8, 8, small), (20, 20, 8, 9, small)]), "patch-1"),
+                      422, "region_size_mismatch")
+    assert doc["region"] == 1 and doc["expected"] == [8, 9] and doc["received"] == [8, 8], doc
+    doc = check_error(patch_frame(d, regions_body([(0, 0, 8, 8, small), (20, 20, 2, 2, b"junk")]), "patch-1"),
+                      422, "invalid_image")
+    assert doc["region"] == 1, doc
+    assert d.fb_bytes() == fb, "a refused PATCH changed the framebuffer"
+    meta = jbody(*d.request("GET", "/api/v1/frame")[::2], 200)
+    assert meta["frame_id"] == "patch-1" and meta["sha256"] == sha, meta
+    frames = jbody(*d.request("GET", "/api/v1/state")[::2], 200)["frames"]
+    assert frames["rejected"] == state["frames"]["rejected"] + 11, frames
+    assert frames["last_error"] == "invalid_image", frames
+
+    # An empty batch changes no pixels: a new id, the same hash, deduplicated.
+    doc = jbody(*patch_frame(d, regions_body([]), "patch-1", **{"X-Frame-ID": "patch-2"})[::2], 200)
+    assert doc["frame_id"] == "patch-2" and doc["sha256"] == sha and doc["deduplicated"] is True, doc
+    assert d.fb_bytes() == fb
+
+    # A PUT of the base PNG again is not a duplicate of the patched frame: it is drawn in full.
+    doc = jbody(*d.put_frame(base_png, **{"X-Frame-ID": "base-2"})[::2], 200)
+    assert doc["deduplicated"] is False and doc["updated_via"] == "full" and doc["regions"] is None, doc
+    assert d.fb_bytes() == expected_fb(base_pixels)
+    assert d.request("GET", "/api/v1/frame/image")[2] == base_png, "a PUT frame's image is the PNG as received"
+
+
+def test_patch_restored_frame(d):
+    """A frame restored from last-frame.png keeps its id, so a PATCH can build on it; then it is no longer persisted."""
+    meta = jbody(*d.request("GET", "/api/v1/frame")[::2], 200)
+    assert meta["restored"] is True and meta["frame_id"] == "keep-me", meta
+    status, _, image = d.request("GET", "/api/v1/frame/image")
+    pixels, channels = unfiltered_png_pixels(image)
+    rgba = random_image(24, w=40, h=30)
+    body = regions_body([(600, 400, 40, 30, png_bytes(40, 30, rgba))])
+    doc = jbody(*patch_frame(d, body, "keep-me", **{"X-Frame-ID": "on-restored"})[::2], 200)
+    assert doc["restored"] is False and doc["persisted"] is False and doc["sha256"] == region_sha(meta["sha256"], body)
+    assert d.fb_bytes() == expected_fb(compose(pixels, [(600, 400, 40, 30, rgba)]), channels)
+
+
 def test_protocol_errors(d):
     def raw(data):
         s = socket.create_connection(("127.0.0.1", d.port), timeout=5)
@@ -403,7 +547,7 @@ def test_protocol_errors(d):
     assert (status, doc["error"]) == (505, "http_version_not_supported"), doc
     check_error(d.request("GET", "/nope"), 404, "not_found")
     status, headers, body = d.request("POST", "/api/v1/frame", body=b"")
-    assert jbody(status, body, 405)["error"] == "method_not_allowed" and headers["allow"] == "GET, PUT", headers
+    assert jbody(status, body, 405)["error"] == "method_not_allowed" and headers["allow"] == "GET, PUT, PATCH", headers
 
 
 def test_slow_client_does_not_block(d):
@@ -646,6 +790,12 @@ def main():
             test_slow_client_does_not_block(d)
             steps.append("persist, restart, restore")
             test_persist_and_restart(d)
+            steps.append("PATCH onto the restored frame")
+            test_patch_restored_frame(d)
+            steps.append("PATCH container encoder == the shared golden vector")
+            test_patch_container_matches_golden()
+            steps.append("PATCH regions: pixels, metadata, /frame/image, refusals are atomic")
+            test_patch_regions(d)
             steps.append("panel: HTML/CSS/JS, CSP and security headers")
             test_panel_assets(d)
             steps.append("panel: /hardware matches the fixtures")

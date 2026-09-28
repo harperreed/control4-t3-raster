@@ -45,14 +45,31 @@ void render_unmap(int rotation, uint32_t native_w, uint32_t native_h, uint32_t n
 
 void render_rgba(const struct fbd_surface *dst, int rotation, const uint8_t *rgba, uint32_t logical_w,
                  uint32_t logical_h) {
-    for (uint32_t y = 0; y < logical_h; y++) {
-        const uint8_t *px = rgba + (size_t)y * logical_w * 4;
-        for (uint32_t x = 0; x < logical_w; x++, px += 4) {
+    render_rgba_rect(dst, rotation, rgba, logical_w, logical_h, 0, 0, logical_w, logical_h);
+}
+
+void render_rgba_rect(const struct fbd_surface *dst, int rotation, const uint8_t *rgba, uint32_t logical_w,
+                      uint32_t logical_h, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    for (uint32_t ly = y; ly < y + h; ly++) {
+        const uint8_t *px = rgba + ((size_t)ly * logical_w + x) * 4;
+        for (uint32_t lx = x; lx < x + w; lx++, px += 4) {
             uint32_t nx, ny;
-            render_map(rotation, logical_w, logical_h, x, y, &nx, &ny);
+            render_map(rotation, logical_w, logical_h, lx, ly, &nx, &ny);
             fbd_put(dst, (int)nx, (int)ny, fbd_pack(dst, px[0], px[1], px[2]));
         }
     }
+}
+
+void render_native_rect(int rotation, uint32_t logical_w, uint32_t logical_h, uint32_t x, uint32_t y, uint32_t w,
+                        uint32_t h, uint32_t *nx, uint32_t *ny, uint32_t *nw, uint32_t *nh) {
+    /* A right-angle turn maps a rect's opposite corners to opposite corners. */
+    uint32_t ax, ay, bx, by;
+    render_map(rotation, logical_w, logical_h, x, y, &ax, &ay);
+    render_map(rotation, logical_w, logical_h, x + w - 1, y + h - 1, &bx, &by);
+    *nx = ax < bx ? ax : bx;
+    *ny = ay < by ? ay : by;
+    *nw = (ax < bx ? bx - ax : ax - bx) + 1;
+    *nh = (ay < by ? by - ay : ay - by) + 1;
 }
 
 static int chan_is(struct fbd_chan c, uint32_t offset, uint32_t length) {

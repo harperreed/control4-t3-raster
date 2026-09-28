@@ -43,6 +43,7 @@ token_file = "token-b"
 url = "https://example.com/b"
 enabled = false
 heartbeat_s = 30
+region_max_fraction = 0   # full frames only
 `
 
 func TestLoadGood(t *testing.T) {
@@ -67,8 +68,8 @@ func TestLoadGood(t *testing.T) {
 	if a.Name != "tabletop" || a.Host != "192.168.23.197:80" || a.URL != "http://example.com/a" {
 		t.Errorf("screen a %+v", a)
 	}
-	if !a.Enabled || a.HeartbeatS != 60 {
-		t.Errorf("screen a defaults: enabled %v heartbeat %d", a.Enabled, a.HeartbeatS)
+	if !a.Enabled || a.HeartbeatS != 60 || a.RegionMaxFraction != 0.5 {
+		t.Errorf("screen a defaults: enabled %v heartbeat %d region_max_fraction %v", a.Enabled, a.HeartbeatS, a.RegionMaxFraction)
 	}
 	if a.Token != "secret-token-a" {
 		t.Errorf("token %q (first line, trimmed)", a.Token)
@@ -76,7 +77,7 @@ func TestLoadGood(t *testing.T) {
 	if a.TokenFile != filepath.Join(filepath.Dir(path), "token-a") {
 		t.Errorf("token_file not resolved against the config dir: %q", a.TokenFile)
 	}
-	if b.Host != "192.168.23.198:8080" || b.Enabled || b.HeartbeatS != 30 {
+	if b.Host != "192.168.23.198:8080" || b.Enabled || b.HeartbeatS != 30 || b.RegionMaxFraction != 0 {
 		t.Errorf("screen b %+v", b)
 	}
 	if c.AdminToken != "" {
@@ -130,6 +131,9 @@ url = "http://x/"
 		{"missing token_file", screen(strings.Replace(ok, `token_file = "token-a"`, "", 1)), `screen "a": token_file is required`},
 		{"token file absent", screen(strings.Replace(ok, `token-a`, `nope`, 1)), `nope`},
 		{"heartbeat zero", screen(ok + "heartbeat_s = 0\n"), `heartbeat_s 0`},
+		{"region fraction above 1", screen(ok + "region_max_fraction = 1.5\n"), `region_max_fraction 1.5`},
+		{"region fraction negative", screen(ok + "region_max_fraction = -0.1\n"), `region_max_fraction -0.1`},
+		{"region fraction a string", screen(ok + "region_max_fraction = \"half\"\n"), `region_max_fraction half`},
 		{"unknown key", screen(ok + "colour = \"red\"\n"), `unknown key screen.colour`},
 		{"duplicate names", screen(ok) + screen(strings.Replace(ok, "10.0.0.1", "10.0.0.2", 1)), `duplicate screen name "a"`},
 		{"duplicate hosts", screen(ok) + screen(strings.Replace(ok, `"a"`, `"b"`, 1)), `screens "a" and "b" both use host 10.0.0.1:80`},

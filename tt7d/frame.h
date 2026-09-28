@@ -1,4 +1,4 @@
-/* ABOUTME: The current frame: validating and showing a PUT PNG, dedup, persistence, and its metadata.
+/* ABOUTME: The current frame: a PUT PNG or a PATCH of regions onto it, dedup, persistence, and its metadata.
  * ABOUTME: A frame reaches the screen only after it fully decoded (and persisted, if asked). */
 #ifndef TT7D_FRAME_H
 #define TT7D_FRAME_H
@@ -19,9 +19,12 @@ struct frame_store {
     int have;             /* a frame has been shown (it may be covered by the fallback clock) */
     int on_screen;        /* that frame is what the screen shows now; the fallback clears it */
     char id[129];         /* "" when unknown (a restored frame without its id file) */
-    char sha256[65];
-    uint8_t *png;         /* the PNG as received, for GET /frame/image */
+    char sha256[65];      /* a PUT: sha256 of the PNG; a PATCH: regions_frame_sha (SPEC §10.1) */
+    uint8_t *rgba;        /* the frame's logical RGBA pixels: what PATCH applies to */
+    uint8_t *png;         /* GET /frame/image: the PNG as received, or NULL after a PATCH until encoded */
     size_t png_len;
+    size_t update_bytes;  /* the body of the PUT or PATCH that made this frame */
+    int regions;          /* regions in the PATCH that made this frame, -1 for a whole PNG */
     int received_known;   /* 0 for a frame restored from disk */
     struct timespec received_at;   /* wall clock of the last PUT of this frame */
     struct timespec received_mono; /* monotonic, for frame_age_s */
@@ -30,7 +33,7 @@ struct frame_store {
     int deduplicated;     /* the last PUT matched and skipped the redraw */
     int restored;         /* shown from last-frame.png at startup */
 
-    unsigned long accepted, dedup_count, rejected;
+    unsigned long accepted, dedup_count, rejected, region_updates;
     const char *last_error; /* the last rejection's error code, or NULL */
 };
 
@@ -44,6 +47,25 @@ int frame_restore(struct frame_store *fs, size_t max_bytes, char *err, size_t er
  * token, Content-Type, X-Frame-ID, X-Frame-SHA256 syntax, X-Persist.
  * Returns 0, or fills resp with an error. */
 int frame_check_head(const char *token, const struct http_request *req, struct response *resp);
+
+/* Header checks for PATCH /api/v1/frame: bearer token, Content-Type
+ * application/x-tt7-regions, X-Base-Frame-ID (required), X-Frame-ID,
+ * X-Frame-SHA256 syntax, X-Persist (true is refused). */
+int frame_check_patch_head(const char *token, const struct http_request *req, struct response *resp);
+
+/* PATCH /api/v1/frame: apply a batch of regions to the frame named by
+ * X-Base-Frame-ID, all or nothing. covered_by is the id of what covers the
+ * frame (the fallback clock), or NULL: a covered frame is not a base. */
+void frame_patch(struct frame_store *fs, const struct http_request *req, const uint8_t *body, size_t len,
+                 const char *covered_by, struct response *resp);
+
+/* GET /api/v1/frame/image: the frame as PNG, encoded on the first request
+ * after a PATCH and kept until the frame changes. */
+void frame_image(struct frame_store *fs, struct response *resp);
+
+/* Encode logical RGBA as an RGB PNG with fast settings (see frame.c).
+ * Returns 0, or -1. The caller frees *png. */
+int frame_encode_png(const uint8_t *rgba, unsigned w, unsigned h, uint8_t **png, size_t *len);
 
 /* PUT /api/v1/frame with the whole body. */
 void frame_put(struct frame_store *fs, const struct http_request *req, const uint8_t *body, size_t len,

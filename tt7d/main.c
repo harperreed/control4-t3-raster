@@ -13,6 +13,7 @@
 #include "events.h"
 #include "fallback_screen.h"
 #include "frame.h"
+#include "regions.h"
 #include "ident.h"
 #include "mqtt.h"
 #include "panel.h"
@@ -240,9 +241,10 @@ static void info_json(struct app *a, struct sbuf *sb) {
     sb_json_str(sb, TT7D_VERSION);
     sb_printf(sb,
               ",\"display\":{\"width\":%u,\"height\":%u,\"rotation\":%d,\"frame_formats\":[\"image/png\"],"
+              "\"frame_patch\":{\"content_type\":\"" REGIONS_CONTENT_TYPE "\",\"version\":%d,\"max_regions\":%d},"
               "\"max_frame_bytes\":%zu,\"native\":{\"width\":%u,\"height\":%u,\"format\":\"%s\",\"stride\":%u,"
               "\"bits_per_pixel\":%u}}",
-              d->logical_w, d->logical_h, d->rotation, a->cfg.max_frame_bytes, d->back.width, d->back.height,
+              d->logical_w, d->logical_h, d->rotation, REGIONS_VERSION, REGIONS_MAX, a->cfg.max_frame_bytes, d->back.width, d->back.height,
               render_format_name(&d->back), d->back.stride, d->back.bpp);
     sb_puts(sb, ",\"capabilities\":{");
     sysinfo_capabilities(sb, a->cfg.sysfs_root);
@@ -250,7 +252,7 @@ static void info_json(struct app *a, struct sbuf *sb) {
     events_info_member(&a->events, sb);
     sb_puts(sb, ",");
     camera_info_member(&a->camera, sb);
-    sb_puts(sb, "},\"auth\":{\"scheme\":\"bearer\",\"required_for\":[\"PUT /api/v1/frame\",\"GET /api/v1/logs\","
+    sb_puts(sb, "},\"auth\":{\"scheme\":\"bearer\",\"required_for\":[\"PUT /api/v1/frame\",\"PATCH /api/v1/frame\",\"GET /api/v1/logs\","
                 "\"PUT /api/v1/display/brightness\",\"POST /api/v1/display/blank\",\"POST /api/v1/display/wake\","
                 "\"POST /api/v1/display/test-pattern\",\"POST /api/v1/system/reboot\",\"GET /api/v1/config/mqtt\","
                 "\"PUT /api/v1/config/mqtt\",\"GET /api/v1/events\",\"POST /api/v1/heartbeat\","
@@ -293,8 +295,10 @@ static void state_json(struct app *a, struct sbuf *sb) {
     sysinfo_power(sb, a->cfg.sysfs_root);
     sb_puts(sb, ",");
     sysinfo_network(sb, a->cfg.sysfs_root);
-    sb_printf(sb, ",\"frames\":{\"accepted\":%lu,\"deduplicated\":%lu,\"rejected\":%lu,\"last_error\":",
-              fs->accepted, fs->dedup_count, fs->rejected);
+    sb_printf(sb,
+              ",\"frames\":{\"accepted\":%lu,\"region_updates\":%lu,\"deduplicated\":%lu,\"rejected\":%lu,"
+              "\"last_error\":",
+              fs->accepted, fs->region_updates, fs->dedup_count, fs->rejected);
     sb_json_str(sb, fs->last_error);
     sb_puts(sb, "},");
     mqtt_app_state_member(&a->mqtt, sb);
@@ -317,7 +321,7 @@ struct route {
 static const struct route routes[] = {
     {"/api/v1/info", "GET"},
     {"/api/v1/state", "GET"},
-    {"/api/v1/frame", "GET, PUT"},
+    {"/api/v1/frame", "GET, PUT, PATCH"},
     {"/api/v1/frame/image", "GET"},
     {"/api/v1/config/mqtt", "GET, PUT"},
 };
@@ -330,6 +334,10 @@ static int find_route(const char *path) {
 
 static int is_frame_put(const struct http_request *req) {
     return !strcmp(req->path, "/api/v1/frame") && !strcmp(req->method, "PUT");
+}
+
+static int is_frame_patch(const struct http_request *req) {
+    return !strcmp(req->path, "/api/v1/frame") && !strcmp(req->method, "PATCH");
 }
 
 /* 1 if method is in the comma-separated allow list. */
@@ -365,6 +373,7 @@ static int app_check_head(void *ctx, const struct http_request *req, struct resp
         return -1;
     }
     if (!strcmp(req->path, "/api/v1/config/mqtt")) return mqtt_http_check_head(a->token, req, resp);
+    if (is_frame_patch(req)) return frame_check_patch_head(a->token, req, resp);
     return is_frame_put(req) ? frame_check_head(a->token, req, resp) : 0;
 }
 
@@ -382,6 +391,8 @@ static void app_handle(void *ctx, const struct http_request *req, const uint8_t 
         panel_handle(&a->panel, req, body, len, resp);
     } else if (is_frame_put(req)) {
         frame_put(&a->frames, req, body, len, resp);
+    } else if (is_frame_patch(req)) { /* the fallback clock covers the frame: no base to patch */
+        frame_patch(&a->frames, req, body, len, fallback_screen_showing(&a->fallback) ? a->fallback.id : NULL, resp);
     } else if (!strcmp(req->path, "/api/v1/info")) {
         info_json(a, &resp->body);
     } else if (!strcmp(req->path, "/api/v1/state")) {
@@ -395,21 +406,21 @@ static void app_handle(void *ctx, const struct http_request *req, const uint8_t 
         resp_error(resp, 404, "no_frame", "no frame has been shown since tt7d started");
     } else if (!strcmp(req->path, "/api/v1/frame")) {
         frame_json(&a->frames, &resp->body);
-    } else { /* /api/v1/frame/image: the PNG exactly as it was received */
-        resp->content_type = "image/png";
-        sb_add(&resp->body, a->frames.png, a->frames.png_len);
+    } else { /* /api/v1/frame/image: the PNG as received, or the patched frame encoded */
+        frame_image(&a->frames, resp);
     }
 }
 
-/* Failure telemetry (SPEC 42): every refused frame PUT, whoever refused it. */
+/* Failure telemetry (SPEC 42): every refused frame PUT or PATCH, whoever refused it. */
 static void app_on_reply(void *ctx, const struct http_request *req, const struct response *resp) {
     struct app *a = ctx;
     update_on_reply(&a->update, req, resp);
-    if (is_frame_put(req) && resp->status >= 400) {
+    int frame_update = is_frame_put(req) || is_frame_patch(req);
+    if (frame_update && resp->status >= 400) {
         a->frames.rejected++;
         a->frames.last_error = resp->error;
     }
-    if (is_frame_put(req) && resp->status == 200) {
+    if (frame_update && resp->status == 200) {
         fallback_screen_frame_accepted(&a->fallback); /* a duplicate counts too: it is a heartbeat */
         mqtt_app_frame_accepted(&a->mqtt);
     }

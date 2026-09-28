@@ -11,7 +11,6 @@
 #include <string.h>
 
 #include "assets.h"
-#include "lodepng.h"
 #include "sha256.h"
 #include "sysinfo.h"
 #include "timesync.h"
@@ -145,34 +144,18 @@ void fallback_screen_handle(struct fallback_screen *s, struct response *resp) {
 }
 
 /* Encode the current drawing as PNG, once per drawing, and only when asked
- * (the control panel preview). Filter "zero", a 512-byte window and no lazy
- * matching: the face is mostly flat colour, so the PNG stays about 49 KB and
- * took 38 ms on the dev host, against 385 ms with lodepng's defaults
- * (2026-09-28). It blocks the poll loop while it runs; expect several times
- * longer on the panel's ARM core (not measured). */
+ * (the control panel preview), with frame_encode_png's fast settings. */
 static int ensure_png(struct fallback_screen *s) {
     if (s->png && s->png_redraw == s->redraws) return 0;
     size_t len = (size_t)s->disp->logical_w * s->disp->logical_h * 4;
     uint8_t *rgba = malloc(len);
     if (!rgba) return -1;
     clockface_render(&s->fonts, &s->shown, rgba, (int)s->disp->logical_w, (int)s->disp->logical_h);
-    LodePNGState st;
-    lodepng_state_init(&st);
-    st.info_raw.colortype = LCT_RGBA;
-    st.info_png.color.colortype = LCT_RGB;
-    st.encoder.auto_convert = 0;
-    st.encoder.filter_strategy = LFS_ZERO;
-    st.encoder.zlibsettings.windowsize = 512;
-    st.encoder.zlibsettings.lazymatching = 0;
-    unsigned char *png = NULL;
-    size_t n = 0;
-    unsigned err = lodepng_encode(&png, &n, rgba, s->disp->logical_w, s->disp->logical_h, &st);
-    lodepng_state_cleanup(&st);
+    uint8_t *png;
+    size_t n;
+    int rc = frame_encode_png(rgba, s->disp->logical_w, s->disp->logical_h, &png, &n);
     free(rgba);
-    if (err) {
-        free(png);
-        return -1;
-    }
+    if (rc != 0) return -1;
     free(s->png);
     s->png = png;
     s->png_len = n;

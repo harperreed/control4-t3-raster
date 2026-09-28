@@ -1,4 +1,4 @@
-// ABOUTME: Client for one tt7d panel (tt7d/README.md): PUT /api/v1/frame, POST /api/v1/heartbeat,
+// ABOUTME: Client for one tt7d panel (tt7d/README.md): PUT and PATCH /api/v1/frame, POST /api/v1/heartbeat,
 // ABOUTME: and the WS /api/v1/events stream (Bearer token in the Authorization header).
 package panel
 
@@ -90,6 +90,19 @@ func (c *Client) PutFrame(ctx context.Context, png []byte, frameID string) error
 		"X-Frame-ID":     frameID,
 		"X-Frame-SHA256": hex.EncodeToString(sum[:]),
 		"X-Persist":      "false",
+	})
+	return err
+}
+
+// PatchFrame applies a region container (regions.Encode) to the frame baseID, making frameID, whose
+// SHA-256 must come out as sha (regions.FrameSHA). tt7d applies all regions or none; it answers 409
+// base_mismatch when baseID is not what it shows. Not persisted: tt7d refuses X-Persist on a PATCH.
+func (c *Client) PatchFrame(ctx context.Context, body []byte, baseID, frameID, sha string) error {
+	_, err := c.do(ctx, frameTimeout, http.MethodPatch, "/api/v1/frame", body, map[string]string{
+		"Content-Type":    "application/x-tt7-regions",
+		"X-Base-Frame-ID": baseID,
+		"X-Frame-ID":      frameID,
+		"X-Frame-SHA256":  sha,
 	})
 	return err
 }

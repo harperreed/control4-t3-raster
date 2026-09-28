@@ -1,5 +1,5 @@
-// ABOUTME: One screen: a Chrome tab's frames paced onto one tt7d panel, heartbeats, and the panel's
-// ABOUTME: touches turned into clicks. Three loops per screen, each with its own backoff; no screen waits on another.
+// ABOUTME: One screen: a Chrome tab's frames paced onto one tt7d panel (changed regions, or a full frame),
+// ABOUTME: heartbeats, and the panel's touches turned into clicks. Three loops per screen; no screen waits on another.
 package screen
 
 import (
@@ -9,8 +9,12 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -19,6 +23,7 @@ import (
 	"github.com/harperreed/control4-t3-raster/server/internal/backoff"
 	"github.com/harperreed/control4-t3-raster/server/internal/config"
 	"github.com/harperreed/control4-t3-raster/server/internal/panel"
+	"github.com/harperreed/control4-t3-raster/server/internal/regions"
 )
 
 // Page is the browser tab a screen shows (browser.Tab).
@@ -51,6 +56,16 @@ type Status struct {
 	FramesPushed    int64      `json:"frames_pushed"`
 	LastError       *string    `json:"last_error"`
 	LastErrorAt     *time.Time `json:"last_error_at"`
+
+	// Frame traffic: every accepted update is a full frame (PUT) or regions (PATCH).
+	BytesSent       int64    `json:"bytes_sent"` // request bodies the panel accepted
+	FullFrames      int64    `json:"full_frames"`
+	RegionFrames    int64    `json:"region_frames"`
+	BaseMismatches  int64    `json:"base_mismatches"`   // PATCHes refused because the panel showed another frame
+	LastUpdate      *string  `json:"last_update"`       // "full" or "regions"
+	LastRegionCount int      `json:"last_region_count"` // regions in the last update (0 for a full frame)
+	LastPushBytes   int      `json:"last_push_bytes"`
+	LastPushMS      *float64 `json:"last_push_ms"` // the last accepted update's request, send to reply
 }
 
 // Screen drives one panel.
@@ -63,9 +78,18 @@ type Screen struct {
 
 	wake   chan struct{} // a new capture is waiting
 	repush chan struct{} // the panel came back: push the current frame even if unchanged
+	hurry  chan struct{} // an urgent capture (a touch's result) is waiting: stop waiting out max_fps
+
+	// What the panel shows, as far as the push loop knows (only the push loop touches these).
+	base    *image.NRGBA // nil: unknown, so the next update is a full frame
+	baseID  string
+	baseSHA string
+	noPatch bool // the panel answered PATCH with 404/405/415: full frames until it reconnects
 
 	mu       sync.Mutex
 	capture  []byte // the newest frame from Chrome
+	urgent   bool   // capture (or one it replaced) is a touch's result: skip the max_fps wait
+	bypass   Bypass
 	forget   bool   // set by Repush, consumed by the push loop
 	shown    []byte // the last frame the panel accepted (preview.png)
 	st       Status
@@ -83,6 +107,7 @@ func New(cfg config.Screen, maxFPS int, log *slog.Logger) *Screen {
 		log:    log.With("screen", cfg.Name),
 		wake:   make(chan struct{}, 1),
 		repush: make(chan struct{}, 1),
+		hurry:  make(chan struct{}, 1),
 		st:     Status{Name: cfg.Name, Host: cfg.Host, URL: cfg.URL, Enabled: cfg.Enabled},
 	}
 }
@@ -100,8 +125,13 @@ func (s *Screen) OnFrame(png []byte) {
 	}
 	s.mu.Lock()
 	s.capture = png
+	s.urgent = s.urgent || s.bypass.Capture(time.Now())
+	urgent := s.urgent
 	s.mu.Unlock()
 	signal(s.wake)
+	if urgent {
+		signal(s.hurry)
+	}
 }
 
 // Repush makes the push loop send the current frame again, even if the panel should already show it.
@@ -213,20 +243,21 @@ func (s *Screen) pushLoop(ctx context.Context) {
 		for pending := true; pending; {
 			pending = false
 			s.mu.Lock()
-			png, forget := s.capture, s.forget
-			s.forget = false
+			png, forget, urgent := s.capture, s.forget, s.urgent
+			s.forget, s.urgent = false, false
 			s.mu.Unlock()
 			if png == nil {
 				break
 			}
 			if forget {
 				s.pacer.Forget()
+				s.base, s.noPatch = nil, false // the panel restarted or covered the frame: resync in full
 			}
 			hash := sha256.Sum256(png)
-			send, wait := s.pacer.Check(time.Now(), hash)
+			send, wait := s.pacer.Check(time.Now(), hash, urgent)
 			if !send {
-				if wait > 0 { // too soon after the last push: wait, then take the newest capture
-					if !sleep(ctx, wait, nil) {
+				if wait > 0 { // too soon after the last push: wait (or until a touch's result comes), then take the newest
+					if !sleep(ctx, wait, s.hurry) {
 						return
 					}
 					pending = true
@@ -252,27 +283,113 @@ func (s *Screen) pushLoop(ctx context.Context) {
 	}
 }
 
-func (s *Screen) push(ctx context.Context, png []byte) error {
+func (s *Screen) nextID() string {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.seq++
-	id := fmt.Sprintf("%s-%s-%d", s.cfg.Name, bootID, s.seq)
-	s.mu.Unlock()
-	if err := s.panel.PutFrame(ctx, png, id); err != nil {
+	return fmt.Sprintf("%s-%s-%d", s.cfg.Name, bootID, s.seq)
+}
+
+// push sends a capture: as changed regions (PATCH) when the panel's frame is known and little changed,
+// else in full (PUT). A refused PATCH (the panel shows something else, or cannot patch) falls back to a
+// full frame at once. On an error the panel's frame is unknown, so the next update is a full frame.
+func (s *Screen) push(ctx context.Context, pngBytes []byte) error {
+	var cur *image.NRGBA
+	if img, err := png.Decode(bytes.NewReader(pngBytes)); err == nil {
+		cur = regions.ToNRGBA(img)
+	} else {
+		s.log.Warn("cannot decode a capture; sending it whole", "err", err)
+	}
+	if cur != nil && !s.noPatch {
+		rects, full := regions.Plan(s.base, cur, s.cfg.RegionMaxFraction)
+		if !full && len(rects) == 0 {
+			return nil // new PNG bytes, the same pixels the panel shows
+		}
+		if !full {
+			sent, err := s.pushRegions(ctx, pngBytes, cur, rects)
+			if sent || err != nil {
+				return err
+			}
+		}
+	}
+	id := s.nextID()
+	start := time.Now()
+	if err := s.panel.PutFrame(ctx, pngBytes, id); err != nil {
+		s.base = nil
 		return err
 	}
+	sum := sha256.Sum256(pngBytes)
+	s.base, s.baseID, s.baseSHA = cur, id, hex.EncodeToString(sum[:])
+	s.accepted(pngBytes, id, "full", 0, len(pngBytes), time.Since(start))
+	return nil
+}
+
+// pushRegions PATCHes rects of cur onto the panel's frame. sent is false (with no error) when a full
+// frame should go instead: the regions would not be smaller, or the panel refused them.
+func (s *Screen) pushRegions(ctx context.Context, pngBytes []byte, cur *image.NRGBA, rects []image.Rectangle) (sent bool, err error) {
+	rs := make([]regions.Region, len(rects))
+	for i, r := range rects {
+		p, err := regions.EncodePNG(cur, r)
+		if err != nil {
+			return false, nil
+		}
+		rs[i] = regions.Region{Rect: r, PNG: p}
+	}
+	body, err := regions.Encode(rs)
+	if err != nil || len(body) >= len(pngBytes) {
+		return false, nil
+	}
+	id, sha := s.nextID(), regions.FrameSHA(s.baseSHA, body)
+	start := time.Now()
+	err = s.panel.PatchFrame(ctx, body, s.baseID, id, sha)
+	var apiErr *panel.APIError
+	switch {
+	case err == nil:
+		s.base, s.baseID, s.baseSHA = cur, id, sha
+		s.accepted(pngBytes, id, "regions", len(rects), len(body), time.Since(start))
+		return true, nil
+	case errors.As(err, &apiErr) && apiErr.Code == "base_mismatch":
+		s.mu.Lock()
+		s.st.BaseMismatches++
+		s.mu.Unlock()
+		s.log.Info("the panel shows another frame (restarted, fallback clock, or another sender); sending a full frame",
+			"base_frame_id", s.baseID, "panel", apiErr.Body)
+	case errors.As(err, &apiErr) && (apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusMethodNotAllowed ||
+		apiErr.Status == http.StatusUnsupportedMediaType):
+		s.noPatch = true
+		s.log.Warn("the panel does not take PATCH /api/v1/frame (older tt7d?); full frames until it reconnects", "err", err)
+	case errors.As(err, &apiErr):
+		s.log.Warn("the panel refused a region update; sending a full frame", "err", err, "reply", apiErr.Body)
+	default:
+		s.base = nil // a network error: it may or may not have applied
+		return false, err
+	}
+	s.base = nil
+	return false, nil
+}
+
+// accepted records an update the panel took.
+func (s *Screen) accepted(pngBytes []byte, id, via string, nRegions, n int, took time.Duration) {
 	now := time.Now().UTC()
+	ms := float64(took.Microseconds()) / 1000
 	s.mu.Lock()
-	s.shown = png
+	s.shown = pngBytes
 	s.st.LastPushAt, s.st.LastFrameID = &now, &id
 	s.st.FramesPushed++
+	s.st.BytesSent += int64(n)
+	if via == "regions" {
+		s.st.RegionFrames++
+	} else {
+		s.st.FullFrames++
+	}
+	s.st.LastUpdate, s.st.LastRegionCount, s.st.LastPushBytes, s.st.LastPushMS = &via, nRegions, n, &ms
 	wasDown := !s.st.Reachable
 	s.st.Reachable = true
 	s.mu.Unlock()
 	if wasDown {
 		s.log.Info("panel reachable", "host", s.cfg.Host)
 	}
-	s.log.Debug("frame pushed", "frame_id", id, "bytes", len(png))
-	return nil
+	s.log.Debug("frame pushed", "frame_id", id, "via", via, "regions", nRegions, "bytes", n, "ms", ms)
 }
 
 func (s *Screen) setReachable(ok bool) {
@@ -358,6 +475,9 @@ func (s *Screen) touch(ctx context.Context, ev panel.Event) {
 	stale := latest == nil || ev.FrameID == nil || *ev.FrameID != *latest
 	if ev.Action == "down" {
 		s.touchLog = false
+	}
+	if ev.Action == "down" || ev.Action == "up" { // the next capture shows its result: send it at once
+		s.bypass.Touch(time.Now())
 	}
 	logIt := stale && !s.touchLog
 	if logIt {

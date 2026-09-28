@@ -122,13 +122,30 @@ void display_draw(struct display *d, const uint8_t *rgba) {
     render_rgba(&d->back, d->rotation, rgba, d->logical_w, d->logical_h);
 }
 
-void display_present(struct display *d) {
-    memcpy(d->window, d->back.mem, d->frame_len);
+/* Some drivers latch new contents only on a pan (as tt7probe does). */
+static void pan(struct display *d) {
     if (d->is_file) return;
-    /* Some drivers latch new contents only on a pan (as tt7probe does). */
     static int pan_warned;
     if (ioctl(d->fd, FBIOPAN_DISPLAY, &d->var) != 0 && !pan_warned) {
         fprintf(stderr, "tt7d: FBIOPAN_DISPLAY (harmless if unsupported): %s\n", strerror(errno));
         pan_warned = 1;
     }
+}
+
+void display_present(struct display *d) {
+    memcpy(d->window, d->back.mem, d->frame_len);
+    pan(d);
+}
+
+void display_draw_rect(struct display *d, const uint8_t *rgba, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    render_rgba_rect(&d->back, d->rotation, rgba, d->logical_w, d->logical_h, x, y, w, h);
+}
+
+void display_present_rect(struct display *d, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    uint32_t nx, ny, nw, nh;
+    render_native_rect(d->rotation, d->logical_w, d->logical_h, x, y, w, h, &nx, &ny, &nw, &nh);
+    size_t bytes_pp = d->back.bpp / 8, off = (size_t)nx * bytes_pp, row = (size_t)nw * bytes_pp;
+    for (uint32_t r = ny; r < ny + nh; r++)
+        memcpy(d->window + (size_t)r * d->back.stride + off, d->back.mem + (size_t)r * d->back.stride + off, row);
+    pan(d);
 }

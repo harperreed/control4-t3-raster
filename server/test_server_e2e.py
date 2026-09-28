@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# ABOUTME: tt7-server end-to-end test: two real host-built tt7d daemons, real headless Chrome, a real test page.
-# ABOUTME: Checks framebuffer pixels, touches-as-clicks, heartbeats, panel restarts, the admin API, and isolation.
+# ABOUTME: tt7-server end-to-end test: four real host-built tt7d daemons, real headless Chrome, real test pages.
+# ABOUTME: Checks pixels, touches-as-clicks, region updates vs full frames, heartbeats, restarts, admin API, isolation.
 """Usage: server/test_server_e2e.py --daemon build/host/tt7d --server build/server/tt7-server --chrome PATH
-          (run by `make server-check`)
+          (run by `make server-check`, through uv for the pinned Pillow that decodes PNGs here)
 
 Nothing is mocked. Each tt7d runs on a file-backed 800x1280 RGB565 framebuffer
 with the panel's sysfs fixture and FIFOs for its input devices (the harness
@@ -27,6 +27,8 @@ import tempfile
 import threading
 import time
 import urllib.parse
+
+from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -64,6 +66,34 @@ b.addEventListener("click", function () {
 });
 </script></body></html>""" % (*BUTTON, json.dumps(COLOURS))
 
+# The dashboard page: a large busy area that never changes above a small button that does. A tap should
+# send only the button (a region update); a full frame of this page is tens of kilobytes.
+DASH_BUTTON = (1000, 650, 200, 100)  # left, top, width, height
+DASH_SAMPLE = (1010, 660)            # inside the button, clear of its number
+DASH_TAP = (1100, 700)
+DASH_FALLBACK_S = 8                  # panel C's --fallback-timeout; its heartbeat_s is 60, so the clock does come
+DASH_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
+html, body { margin: 0; width: 1280px; height: 800px; background: rgb(16, 32, 48); overflow: hidden; }
+#art { position: absolute; left: 0; top: 0; }
+#b { position: absolute; left: %dpx; top: %dpx; width: %dpx; height: %dpx; border: 0; margin: 0; padding: 0;
+     outline: none; font: bold 60px sans-serif; color: #fff; background: rgb(255, 0, 0); }
+</style></head><body><canvas id="art" width="1280" height="620"></canvas><button id="b">0</button><script>
+var c = document.getElementById("art").getContext("2d"), seed = 12345;
+function rnd() { seed = (seed * 1103515245 + 12345) %% 2147483648; return seed / 2147483648; }
+for (var y = 0; y < 620; y += 20) for (var x = 0; x < 1280; x += 20) {
+  c.fillStyle = "rgb(" + [rnd() * 255 | 0, rnd() * 255 | 0, rnd() * 255 | 0].join(",") + ")";
+  c.fillRect(x, y, 20, 20);
+}
+c.font = "18px sans-serif"; c.fillStyle = "#fff";
+for (var i = 0; i < 30; i++) c.fillText("sensor " + i + ": " + (rnd() * 100).toFixed(2) + " units", 20 + (i %% 4) * 310, 20 + (i >> 2) * 60);
+var colours = %s, n = 0, b = document.getElementById("b");
+b.addEventListener("click", function () {
+  n++;
+  b.textContent = n;
+  b.style.background = "rgb(" + colours[n %% colours.length].join(",") + ")";
+});
+</script></body></html>""" % (*DASH_BUTTON, json.dumps(COLOURS))
+
 SECOND_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
 html, body { margin: 0; background: rgb(255, 0, 255); font: 120px sans-serif; }
 </style></head><body><p style="margin: 300px 0 0 500px">SECOND</p></body></html>"""
@@ -94,6 +124,8 @@ class TestPages:
                     body = COUNTER_HTML.encode()
                 elif u.path == "/second":
                     body = SECOND_HTML.encode()
+                elif u.path == "/dashboard":
+                    body = DASH_HTML.encode()
                 elif u.path == "/clicked":
                     pages.clicks[q["screen"][0]] = max(pages.clicks.get(q["screen"][0], 0), int(q["n"][0]))
                     body = b"ok"
@@ -181,6 +213,29 @@ class Panel(test_e2e.Daemon):
 
     def fallback(self):
         return self.get("/api/v1/state")["fallback"]["active"]
+
+    def fb_bytes(self):
+        with open(self.fb, "rb") as f:
+            return f.read()
+
+
+def png_rgb(png):
+    """A PNG's pixels as RGB bytes (Pillow; alpha dropped: the panel shows none)."""
+    import io
+    return Image.open(io.BytesIO(png)).convert("RGB").tobytes()
+
+
+def fb_from_png(png):
+    """The RGB565 framebuffer tt7d should hold for a logical PNG at rotation 270: logical (x, y) lands on
+    native (y, 1279 - x), which is the image turned 90 degrees counter-clockwise (Pillow's ROTATE_90)."""
+    import io
+    rot = Image.open(io.BytesIO(png)).convert("RGB").transpose(Image.Transpose.ROTATE_90).tobytes()
+    out = bytearray(len(rot) // 3 * 2)
+    for i in range(len(rot) // 3):
+        r, g, b = rot[3 * i], rot[3 * i + 1], rot[3 * i + 2]
+        v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+        out[2 * i], out[2 * i + 1] = v & 0xFF, v >> 8
+    return bytes(out)
 
 
 def rec(etype, code, value):
@@ -293,6 +348,97 @@ def chrome_usage(pids, window=5.0):
     return pss_kib / 1024, 100.0 * (c1 - c0) / hz / (t1 - t0)
 
 
+def screen_status(admin_port, name):
+    return {s["name"]: s for s in json.loads(http_json(admin_port, "GET", "/api/screens")[1])["screens"]}[name]
+
+
+def tap_and_measure(panel, admin_port, name, n, rot):
+    """Tap the dashboard button; return (ms to the new colour on the fb, bytes sent for the tap, status after)."""
+    before = screen_status(admin_port, name)
+    t0 = time.monotonic()
+    panel.tap(*DASH_TAP, rot)
+    wait_for(f"colour {n} on panel {name}", lambda: panel.pixel(*DASH_SAMPLE, rot) == rgb565(COLOURS[n % len(COLOURS)]),
+             timeout=10, step=0.005)
+    ms = (time.monotonic() - t0) * 1000
+    time.sleep(0.4)  # let the tap's last capture (the release) go out too
+    after = screen_status(admin_port, name)
+    return ms, after["bytes_sent"] - before["bytes_sent"], before, after
+
+
+def dirty_rect_steps(steps, info, c, dd, rot, admin_port, pages):
+    """Region updates on panel C against full frames on panel D, both showing the dashboard page."""
+    steps.append("7a. C and D show the dashboard, each from one full frame")
+    for p, name in ((c, "c"), (dd, "d")):
+        wait_for(f"the dashboard on {name}", lambda p=p: p.pixel(*DASH_SAMPLE, rot) == rgb565(COLOURS[0]), timeout=20)
+        wait_for(f"{name}'s status", lambda name=name: screen_status(admin_port, name)["full_frames"] >= 1)
+    full_bytes = len(http_json(admin_port, "GET", "/api/screens/c/preview.png")[1])  # what one full frame costs
+
+    steps.append("7b. a tap on C sends only the button (regions), much smaller than a full frame; D sends full frames")
+    c_ms, c_bytes, d_ms, d_bytes = [], [], [], []
+    for n in (1, 2, 3, 4):
+        ms, sent, before, after = tap_and_measure(c, admin_port, "c", n, rot)
+        assert after["region_frames"] > before["region_frames"] and after["full_frames"] == before["full_frames"], \
+            f"tap {n} on C was not sent as regions: {before} -> {after}"
+        assert after["last_update"] == "regions" and 1 <= after["last_region_count"] <= 4, after
+        assert sent * 10 < full_bytes, f"tap {n} on C cost {sent} bytes, a full frame is {full_bytes}"
+        c_ms.append(ms)
+        c_bytes.append(sent)
+    fb_c = c.fb_bytes()  # read at once: C's fallback clock comes DASH_FALLBACK_S after the last frame
+    image_c = c.request("GET", "/api/v1/frame/image")[2]
+    preview_c = http_json(admin_port, "GET", "/api/screens/c/preview.png")[1]
+    meta_c = c.get("/api/v1/frame")
+    assert meta_c["updated_via"] == "regions" and meta_c["regions"] >= 1, meta_c
+    for n in (1, 2, 3, 4):
+        ms, sent, before, after = tap_and_measure(dd, admin_port, "d", n, rot)
+        assert after["region_frames"] == 0 and after["full_frames"] > before["full_frames"], after
+        d_ms.append(ms)
+        d_bytes.append(sent)
+    info.append(f"dashboard full frame: {full_bytes} bytes")
+    info.append("tap -> panel fb, regions (C): " + ", ".join(f"{x:.0f} ms" for x in c_ms)
+                + "; bytes per tap: " + ", ".join(str(x) for x in c_bytes))
+    info.append("tap -> panel fb, full frames (D): " + ", ".join(f"{x:.0f} ms" for x in d_ms)
+                + "; bytes per tap: " + ", ".join(str(x) for x in d_bytes))
+
+    steps.append("7c. after region updates C's framebuffer and /frame/image are exactly the page Chrome painted")
+    assert png_rgb(image_c) == png_rgb(preview_c), "C's composed /frame/image differs from the page"
+    assert fb_c == fb_from_png(preview_c), "C's framebuffer differs from the page, rotated"
+
+    steps.append("7d. another sender PUTs a frame to C: the next region update gets 409 and a full frame resyncs")
+    other = test_e2e.png_bytes(1280, 800, test_e2e.random_image(99))
+    assert c.put_frame(other, **{"X-Frame-ID": "someone-else"})[0] == 200
+    before = screen_status(admin_port, "c")
+    c.tap(*DASH_TAP, rot)
+    wait_for("C back on the page", lambda: c.pixel(*DASH_SAMPLE, rot) == rgb565(COLOURS[5 % len(COLOURS)]), timeout=10)
+    wait_for("C's full resync", lambda: screen_status(admin_port, "c")["full_frames"] > before["full_frames"])
+    after = screen_status(admin_port, "c")
+    assert after["base_mismatches"] == before["base_mismatches"] + 1, after
+    assert c.fb_bytes() == fb_from_png(http_json(admin_port, "GET", "/api/screens/c/preview.png")[1])
+    ms, sent, before, after = tap_and_measure(c, admin_port, "c", 6, rot)
+    assert after["last_update"] == "regions", f"the tap after the resync was not regions: {after}"
+
+    steps.append(f"7e. C's fallback clock takes over ({DASH_FALLBACK_S} s, no heartbeat); a tap gets 409 and a full frame")
+    wait_for("C's fallback clock", c.fallback, timeout=DASH_FALLBACK_S + 4, step=0.25)
+    before = screen_status(admin_port, "c")
+    c.tap(*DASH_TAP, rot)
+    wait_for("C back on the page", lambda: not c.fallback() and c.pixel(*DASH_SAMPLE, rot) == rgb565(COLOURS[7 % len(COLOURS)]),
+             timeout=10)
+    wait_for("C's full resync", lambda: screen_status(admin_port, "c")["full_frames"] > before["full_frames"])
+    after = screen_status(admin_port, "c")
+    assert after["base_mismatches"] == before["base_mismatches"] + 1, after
+    assert c.get("/api/v1/frame")["updated_via"] == "full"
+
+    steps.append("7f. C restarts: the server resyncs it with a full frame, then taps are regions again")
+    c.stop()
+    before = screen_status(admin_port, "c")
+    c.start()
+    wait_for("C's frame after the restart", lambda: (c.frame_id() or "").startswith("c-")
+             and c.pixel(*DASH_SAMPLE, rot) == rgb565(COLOURS[7 % len(COLOURS)]), timeout=15)
+    assert c.get("/api/v1/frame")["updated_via"] == "full"
+    assert screen_status(admin_port, "c")["full_frames"] > before["full_frames"]
+    ms, sent, before, after = tap_and_measure(c, admin_port, "c", 8, rot)
+    assert after["last_update"] == "regions" and sent * 10 < full_bytes, after
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--daemon", required=True, help="host-built tt7d")
@@ -311,13 +457,18 @@ def main():
         flags = ["--fallback-timeout", str(FALLBACK_S), "--ntp-marker", os.path.join(workdir, "ntp-synced")]
         a = Panel(daemon_bin, os.path.join(workdir, "a"), flags)
         b = Panel(daemon_bin, os.path.join(workdir, "b"), flags)
+        c_flags = ["--fallback-timeout", str(DASH_FALLBACK_S), "--ntp-marker", os.path.join(workdir, "ntp-synced")]
+        c = Panel(daemon_bin, os.path.join(workdir, "c"), c_flags)  # dashboard, region updates
+        dd = Panel(daemon_bin, os.path.join(workdir, "d"), flags)   # dashboard, full frames only (the "before")
         config = os.path.join(workdir, "screens.toml")
         server = Server(server_bin, workdir, config)
         admin_port = free_port()
         try:
             a.start()
             b.start()
-            for d in (a, b):
+            c.start()
+            dd.start()
+            for d in (a, b, c, dd):
                 mode = stat.S_IMODE(os.stat(os.path.join(d.data, "token")).st_mode)
                 assert mode & 0o077 == 0, f"tt7d wrote its token with mode {mode:o}"
             with open(config, "w") as f:
@@ -341,6 +492,23 @@ host = "127.0.0.1:{b.port}"
 token_file = "{b.data}/token"
 url = "{pages.url('/counter?screen=b')}"   # the counter, for now
 heartbeat_s = {HEARTBEAT_S}
+
+# panel C: the dashboard, sent as regions; heartbeats rare, so its fallback clock comes and the server finds out
+[[screen]]
+name = "c"
+host = "127.0.0.1:{c.port}"
+token_file = "{c.data}/token"
+url = "{pages.url('/dashboard?screen=c')}"
+heartbeat_s = 60
+
+# panel D: the same dashboard, full frames only
+[[screen]]
+name = "d"
+host = "127.0.0.1:{dd.port}"
+token_file = "{dd.data}/token"
+url = "{pages.url('/dashboard?screen=d')}"
+heartbeat_s = {HEARTBEAT_S}
+region_max_fraction = 0
 """)
             rot = a.rot()
             assert rot == b.rot() == 270, f"tt7d's default rotation is {rot}, the test expects 270"
@@ -355,6 +523,8 @@ heartbeat_s = {HEARTBEAT_S}
                 assert fid and fid.startswith(("a-", "b-")), f"frame id {fid!r} is not tt7-server's"
                 meta = d.get("/api/v1/frame")
                 assert (meta["width"], meta["height"], meta["persisted"]) == (1280, 800, False), meta
+
+            dirty_rect_steps(steps, info, c, dd, rot, admin_port, pages)
 
             steps.append("5a. GET /api/screens reports both screens, reachable, with their device ids")
             wait_for("both event streams connected", lambda: all(
@@ -393,7 +563,9 @@ heartbeat_s = {HEARTBEAT_S}
                          step=0.005)
                 lat.append((time.monotonic() - t0) * 1000)
                 time.sleep(0.5)
-            info.append("touch -> new frame on the panel fb: " + ", ".join(f"{x:.0f} ms" for x in lat))
+            s_a = screen_status(admin_port, "a")
+            info.append("touch -> new frame on the panel fb: " + ", ".join(f"{x:.0f} ms" for x in lat)
+                        + f" (counter page; last update {s_a['last_update']}, {s_a['last_push_bytes']} bytes)")
             clicks_a = 3
 
             steps.append(f"3a. heartbeats (every {HEARTBEAT_S} s) keep fallback.active false past the "
@@ -408,7 +580,7 @@ heartbeat_s = {HEARTBEAT_S}
 
             pids = server.descendants()
             pss, cpu = chrome_usage(pids)
-            info.append(f"Chrome for 2 idle screens: {len(pids)} processes, {pss:.0f} MiB PSS, {cpu:.1f}% of one core")
+            info.append(f"Chrome for 4 idle screens: {len(pids)} processes, {pss:.0f} MiB PSS, {cpu:.1f}% of one core")
 
             steps.append("6a. panel B hung (SIGSTOP): panel A still gets its frame at once")
             os.kill(b.proc.pid, signal.SIGSTOP)
@@ -453,6 +625,9 @@ heartbeat_s = {HEARTBEAT_S}
             status, body = http_json(admin_port, "PUT", "/api/screens/b/url", {"url": second})
             assert status == 200 and json.loads(body)["url"] == second, (status, body)
             wait_for("magenta on panel B", lambda: b.pixel(*SAMPLE, rot) == rgb565(MAGENTA), timeout=10)
+            s_b = screen_status(admin_port, "b")
+            assert s_b["last_update"] == "full", f"a navigation should be a full frame: {s_b}"
+            assert b.get("/api/v1/frame")["updated_via"] == "full"
             assert a.pixel(*SAMPLE, rot) == rgb565(COLOURS[clicks_a % len(COLOURS)]), "panel A changed"
             with open(config) as f:
                 saved = f.read()
@@ -493,7 +668,7 @@ heartbeat_s = {HEARTBEAT_S}
             print(f"FAIL test_server_e2e: {steps[-1] if steps else 'start'}: {type(e).__name__}: {e}",
                   file=sys.stderr)
             server.stop()
-            for path in (server.log_path, a.log_path, b.log_path):
+            for path in (server.log_path, a.log_path, b.log_path, c.log_path, dd.log_path):
                 if os.path.exists(path):
                     with open(path, "rb") as f:
                         tail = f.read().decode("utf-8", "replace").splitlines()[-30:]
@@ -501,7 +676,7 @@ heartbeat_s = {HEARTBEAT_S}
             return 1
         finally:
             server.stop()
-            for d in (a, b):
+            for d in (a, b, c, dd):
                 if d.proc:
                     try:
                         os.kill(d.proc.pid, signal.SIGCONT)

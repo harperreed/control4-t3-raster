@@ -26,6 +26,11 @@ a vendored TrueType rasterizer.
   touches the screen. The fb has no second page (`yres_virtual` = `yres`), so
   that copy is not synchronized with scan-out, and a frame change may tear
   for one refresh.
+- **Region updates**: tt7d keeps the frame's logical RGBA. `PATCH /frame`
+  (SPEC §10.1, "Region updates" below) decodes a batch of PNG rectangles,
+  and only when all of them are good copies them into that RGBA, converts
+  just those rectangles into the back buffer, and copies just their native
+  rows to the fb.
 - **HTTP**: our own minimal HTTP/1.1 server (`http.c`, `server.c`). It runs a
   single-threaded `poll()` loop over at most 8 connections and answers one
   request per connection, always with `Connection: close`. Bodies need
@@ -70,7 +75,7 @@ data dir: `releases/` and `update/` (see "Web update (SPEC M8)").
 ## API (`/api/v1`)
 
 Reads need no auth, except `GET /logs`, `GET /config/mqtt`, the
-`GET /events` WebSocket and every camera route. `PUT /frame`, `POST /heartbeat`,
+`GET /events` WebSocket and every camera route. `PUT /frame`, `PATCH /frame`, `POST /heartbeat`,
 `GET /logs`, both `/config/mqtt` methods, `GET /camera/snapshot`, both
 `/config/camera` methods and every control panel action need
 `Authorization: Bearer <token>` (`/info` lists them under `auth.required_for`).
@@ -79,17 +84,18 @@ already visible on the glass. Revisit this when the panel shows anything private
 
 | Endpoint | Returns |
 |---|---|
-| `GET /info` | `device_id`, `model`, `firmware_version`, `build`; `display` {`width`, `height`, `rotation`, `frame_formats`, `max_frame_bytes`, `native` {`width`, `height`, `format`, `stride`, `bits_per_pixel`}}; `capabilities` read from sysfs at request time, plus `capabilities.input` from the open input devices (see "Input (M3)"); `auth` |
-| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`} (what the screen shows: a frame, or the fallback clock), `power`, `network.interfaces`, `fallback` {`active`, `reason` (`no_frame_since_boot`, `server_timeout` or null), `timeout_s`, `since` (null when not active)}, `clock` {`synced`, `synced_at`, `timezone`, `format` (`24h`/`12h`)}, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`}; `input` {`last_touch`, `last_button` (ISO times or null), `event_clients`, `event_clients_dropped_slow`}; `camera` (see "Camera"); `update` {`release` (the web-installed release tt7d runs from, null for the image's own build), `restart_pending`} (the rest is at `GET /system/update`) |
+| `GET /info` | `device_id`, `model`, `firmware_version`, `build`; `display` {`width`, `height`, `rotation`, `frame_formats`, `frame_patch` {`content_type`, `version`, `max_regions`}, `max_frame_bytes`, `native` {`width`, `height`, `format`, `stride`, `bits_per_pixel`}}; `capabilities` read from sysfs at request time, plus `capabilities.input` from the open input devices (see "Input (M3)"); `auth` |
+| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`} (what the screen shows: a frame, or the fallback clock), `power`, `network.interfaces`, `fallback` {`active`, `reason` (`no_frame_since_boot`, `server_timeout` or null), `timeout_s`, `since` (null when not active)}, `clock` {`synced`, `synced_at`, `timezone`, `format` (`24h`/`12h`)}, `frames` {`accepted`, `region_updates` (accepted PATCHes that changed pixels), `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`}; `input` {`last_touch`, `last_button` (ISO times or null), `event_clients`, `event_clients_dropped_slow`}; `camera` (see "Camera"); `update` {`release` (the web-installed release tt7d runs from, null for the image's own build), `restart_pending`} (the rest is at `GET /system/update`) |
 | `GET /events` | The input event stream, a WebSocket. Needs the token (see "Input (M3)") |
 | `GET /config/mqtt` | The MQTT settings in effect (see below). Needs the token |
 | `PUT /config/mqtt` | Body: a JSON object of MQTT settings. Needs the token and `Content-Type: application/json`; at most 4096 bytes |
 | `GET /camera/snapshot` | A 1280×720 JPEG (quality 80) from the camera. Needs the token. 503 when the camera is off or cannot deliver (see "Camera") |
 | `GET /config/camera` | The camera settings in effect. Needs the token |
 | `PUT /config/camera` | Body: a JSON object of camera settings. Needs the token and `Content-Type: application/json`; at most 4096 bytes |
-| `GET /frame` | Frame metadata: `frame_id`, `sha256`, `received_at`, `displayed_at`, `width`, `height`, `content_type`, `bytes`, `persisted`, `deduplicated`, `restored`. While the fallback clock shows: its metadata, `frame_id` `fallback-clock-<unix minute>`, `received_at` null. 404 `no_frame` before the first frame when the fallback is off |
-| `GET /frame/image` | The PNG exactly as received (or as restored). While the fallback clock shows: the clock as a PNG, encoded on request. 404 `no_frame` before the first frame when the fallback is off |
+| `GET /frame` | Frame metadata: `frame_id`, `sha256` (see "Region updates"), `received_at`, `displayed_at`, `width`, `height`, `content_type`, `bytes` (the body of the PUT or PATCH that made the frame), `persisted`, `deduplicated`, `restored`, `updated_via` (`full` or `regions`), `regions` (null after a PUT). While the fallback clock shows: its metadata, `frame_id` `fallback-clock-<unix minute>`, `received_at` null. 404 `no_frame` before the first frame when the fallback is off |
+| `GET /frame/image` | The PNG exactly as received (or as restored). After a PATCH: the composed frame, encoded as PNG on the first request and kept until the frame changes. While the fallback clock shows: the clock as a PNG, encoded on request. 404 `no_frame` before the first frame when the fallback is off |
 | `PUT /frame` | Body: a 1280×800 PNG. Headers: `Content-Type: image/png` (required), `X-Frame-ID` (1–128 printable ASCII, no spaces; generated as `tt7d-<24 hex>` if absent), `X-Frame-SHA256` (checked if present), `X-Persist: true\|false`. Replies 200 with the frame metadata |
+| `PATCH /frame` | Body: a region container (SPEC §10.1), `Content-Type: application/x-tt7-regions`. Headers: `X-Base-Frame-ID` (required: the frame it applies to), `X-Frame-ID`, `X-Frame-SHA256` (the resulting frame's, checked if present), `X-Persist` (only false). All regions or none; 409 `base_mismatch` unless the base is on screen. Replies 200 with the frame metadata |
 | `POST /heartbeat` | Needs the token; send `Content-Length: 0` (`curl -d ''`). Restarts the fallback timer and replies `{"fallback": {...}}` as in `/state`. It keeps a server frame up; during the fallback it changes nothing on screen |
 
 Control panel endpoints (`panel.c`):
@@ -137,6 +143,11 @@ Every error is JSON: `{"error": "<code>", "message": "...", ...}`.
 | 400 | `bad_request`, `invalid_frame_id`, `invalid_sha256`, `invalid_persist`, `invalid_brightness`, `invalid_lines` | |
 | 400 | `brightness_out_of_range` | `unit`, `min`, `max` |
 | 400 | `sha256_mismatch` | `header`, `computed` |
+| 400 | `PATCH /frame`: `missing_base_frame_id`, `persist_not_supported`, `invalid_regions`, `unsupported_regions_version` | `region` (when one is at fault) |
+| 400 | `too_many_regions` | `max` |
+| 409 | `base_mismatch`: `X-Base-Frame-ID` is not the frame on screen (restart, another sender, the fallback clock) | `current_frame_id` |
+| 422 | `region_out_of_bounds`, `regions_too_large` | `region` (out of bounds) |
+| 422 | `region_size_mismatch` | `region`, `expected` [w, h], `received` [w, h] |
 | 400 | `invalid_config` (`PUT /config/mqtt`, `PUT /config/camera`) | `field` (null for a syntax error) |
 | 409 | `set_by_flag`: that setting comes from a `--mqtt-*` or `--camera` flag | `field` |
 | 400 | Web update, the bundle refused: `invalid_bundle` (not ustar, bad checksum, truncated), `bad_member_type` (link, device, directory, FIFO, pax or GNU header), `unsafe_path` (absolute or `..`), `unknown_file` (not an allowed path), `duplicate_member`, `no_manifest`, `invalid_manifest`, `missing_file` (listed, not in the tar), `unlisted_file` (in the tar, not listed) | `member` (when one is at fault) |
@@ -147,10 +158,10 @@ Every error is JSON: `{"error": "<code>", "message": "...", ...}`.
 | 404 | `not_found`, `no_frame` | |
 | 405 | `method_not_allowed` (and `Allow`) | |
 | 408 | `request_timeout` | |
-| 411 | `length_required` (chunked, or no Content-Length on PUT) | |
+| 411 | `length_required` (chunked, or no Content-Length on PUT, POST or PATCH) | |
 | 413 | `payload_too_large` | `max_bytes` (web update: 4 MiB) |
 | 415 | `unsupported_media_type` | `supported` |
-| 422 | `invalid_image` | `detail` (lodepng's reason) |
+| 422 | `invalid_image` | `detail` (lodepng's reason); `region` for a PATCH |
 | 422 | `invalid_dimensions` | `expected` [w, h], `received` [w, h] |
 | 426 | `upgrade_required`: `GET /events` without a WebSocket upgrade (with `Upgrade` and `Sec-WebSocket-Version: 13` headers) | |
 | 431 | `headers_too_large` | |
@@ -163,8 +174,45 @@ Every error is JSON: `{"error": "<code>", "message": "...", ...}`.
 | 507 | `insufficient_storage` (web update: /data would drop below `--update-min-free-bytes`) | `free_bytes`, `needed_bytes` |
 | 505 | `http_version_not_supported` | |
 
-Every refused `PUT /frame` counts in `/state` `frames.rejected`, and its code
-goes to `frames.last_error` (SPEC §42).
+Every refused `PUT /frame` or `PATCH /frame` counts in `/state`
+`frames.rejected`, and its code goes to `frames.last_error` (SPEC §42).
+
+### Region updates (`PATCH /frame`, SPEC §10.1)
+
+The body is `"TT7R"`, version 1, a reserved 0 byte, a u16 count (0..16), one
+12-byte record per region (x, y, w, h as u16, png_len as u32; big-endian,
+logical coordinates), then the PNGs in record order. SPEC §10.1 has the
+table and every refusal.
+
+- **Base.** `X-Base-Frame-ID` must be the frame on screen. A restarted tt7d
+  has only its restored frame (if any, under its persisted id), the
+  fallback clock covers the frame, and a PUT from anyone else replaces it:
+  each answers 409 `base_mismatch` with `current_frame_id`. The sender then
+  PUTs the whole frame.
+- **All or nothing.** Every region is decoded (lodepng) and size-checked
+  before a pixel changes; then they are copied into the kept logical RGBA
+  in order (later wins), and only their rectangles are converted and copied
+  to the fb, through the same rotation code as a PUT.
+- **`sha256`** after a PATCH is `sha256(<base sha256 as 64 lowercase hex> +
+  <body>)`, not a hash of the pixels: hashing 4 MB of RGBA on every tap would
+  cost more than the patch saves. Both sides compute it; the server sends it
+  as `X-Frame-SHA256`. An empty batch keeps the hash, changes the id, and
+  replies `deduplicated: true`.
+- **Not persisted.** `X-Persist: true` gets 400 `persist_not_supported`.
+- The golden request body `test/fixtures/regions-v1.bin` (with
+  `regions-v1.txt`) is checked by `test_regions.c` and by the server's Go
+  tests.
+
+```sh
+# one 200x100 region at (1000, 650) onto the frame "f1"; tools/ has no helper, this is the layout by hand
+python3 - <<'PY' > /tmp/patch.bin
+import struct, sys
+png = open("button.png", "rb").read()   # exactly 200x100
+sys.stdout.buffer.write(b"TT7R" + bytes([1, 0]) + struct.pack(">HHHHHI", 1, 1000, 650, 200, 100, len(png)) + png)
+PY
+curl -s -X PATCH -H "Authorization: Bearer $T" -H "Content-Type: application/x-tt7-regions" \
+     -H "X-Base-Frame-ID: f1" -H "X-Frame-ID: f2" --data-binary @/tmp/patch.bin http://$P/api/v1/frame
+```
 
 ## Input (M3)
 
