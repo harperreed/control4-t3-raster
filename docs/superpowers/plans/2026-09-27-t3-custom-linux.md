@@ -2,7 +2,7 @@
 
 ## Now
 - Step: panel runs main's tt7d (rotation 270, touch/WS, fallback clock, NTP, MQTT live on 192.168.23.123). Now: camera integration (branch tt7d-camera) and web firmware update (branch tt7d-web-update), parallel worktrees
-- Next: when docked on its power adapter: resume `scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27 system`, then cache/userdata/user; verify the watchdog fixes a real stall (usb-watchdog.log). Then docs/hardware-inventory.md + recovery doc (closes M0), then tt7d M1/M2
+- Next: merge camera + web update, deploy, test camera on device (snapshot, presence). Deferred: finish the kernel-side M0 dump (system chunk 8/16 on), recovery doc
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
 - Approved: "2 gooo" (2026-09-27): flash the next image (USB watchdog + Wi-Fi at boot) over the network after review
@@ -14,12 +14,13 @@
 - Approved: "also if it can't find the server it is expecting it shoudl show a nice date, clock on the screen. that is the failure mode." (2026-09-27): fallback clock screen when frame age > timeout (default 5 min, configurable, 0 = off) or before the first frame; POST /api/v1/heartbeat; NTP + configurable timezone; never show a clock before NTP sync. Amends SPEC §41
 - Approved: push per Doctor Biz: "git remote add origin https://github.com/harperreed/control4-t3-raster.git / git branch -M main / git push -u origin main" (2026-09-27); license MIT ("ok. MIT")
 - Approved: "the mqtt doesnt' take a login. let's do the rest" (2026-09-28): configure anonymous MQTT to 192.168.23.123:1883; build camera (snapshot + presence) and web firmware update
-- Open: default rotation 90 is a guess, so confirm with tools/make-test-frame.py photo
-- Open (older): Language for tt7d (C via zig cc recommended; Go>=1.24/Rust>=1.64 require kernel >=3.2, the panel has 3.0.36)
+- Resolved: rotation 270 ("it is upside down" at 90, 2026-09-28); touch corners verified on the glass
+- Resolved: tt7d is C via zig cc (Go>=1.24/Rust>=1.64 require kernel >=3.2; the panel has 3.0.36)
 - Approved: "Custom Linux + own UI" (2026-09-27), chosen over web kiosk / PC-driven display / stock MMKeypad
 - Approved: "a + c" (2026-09-27): dashboard + control panel content, now served by the server side of SPEC.md
 - Approved: "i figired out a much better solution" + pasted SPEC.md (2026-09-27): tt7d dumb network display supersedes the Smashing/rooted-Android kiosk
-- Compactions: 0
+- Open: none
+- Compactions: 0 (new session 2026-09-28: camera/update agents were cut off before creating branches; relaunched)
 
 ## Goal
 Turn a Control4 T3 7" tabletop (C4-TT7, RK3188) into a display running our own UI. Keep the stock kernel and swap the userspace, as MMKeypad does.
