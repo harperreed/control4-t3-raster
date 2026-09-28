@@ -90,6 +90,7 @@ class Daemon:
         shutil.copytree(FIXTURE, self.sysfs)
         self.port = free_port()
         self.proc = None
+        self.rotation = "90"  # None: pass no --rotation, so tt7d's own default applies
         with open(self.fb, "wb") as f:
             f.write(bytes(FB_BYTES))
 
@@ -98,7 +99,8 @@ class Daemon:
         self.proc = subprocess.Popen(
             [self.binary, "--listen", f"127.0.0.1:{self.port}", "--fb-file", self.fb,
              "--fb-geometry", f"{NATIVE_W}x{NATIVE_H}x16", "--fb-stride", str(STRIDE), "--fb-format", "rgb565",
-             "--rotation", "90", "--data-dir", self.data, "--sysfs-root", self.sysfs,
+             *(["--rotation", self.rotation] if self.rotation is not None else []),
+             "--data-dir", self.data, "--sysfs-root", self.sysfs,
              "--proc-root", PROC_FIXTURE, "--log-file", self.log_path, "--input-dir", self.input_dir,
              "--reboot-cmd", "touch " + shlex.quote(self.reboot_marker),
              "--request-timeout-ms", str(TIMEOUT_MS)] + self.extra_args,
@@ -589,6 +591,22 @@ def test_token_never_logged(d):
         assert d.token().encode() not in f.read(), "the bearer token appeared in the log"
 
 
+def test_default_rotation(binary, workdir):
+    """With no --rotation flag, tt7d uses 270: measured upright on the docked TT7 (2026-09-28)."""
+    rd = os.path.join(workdir, "default-rotation")
+    os.makedirs(rd)
+    d = Daemon(binary, rd, ["--fallback-timeout", "0", "--ntp-marker", os.path.join(rd, "ntp-synced")])
+    d.rotation = None
+    try:
+        d.start()
+        status, _, body = d.request("GET", "/api/v1/info")
+        assert status == 200, status
+        disp = json.loads(body)["display"]
+        assert (disp["width"], disp["height"], disp["rotation"]) == (1280, 800, 270), disp
+    finally:
+        d.stop()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--daemon", required=True, help="host-built tt7d binary")
@@ -657,6 +675,12 @@ def main():
         if bad:
             print("FAIL test_e2e: sanitizer findings in the tt7d log:", *bad[:10], sep="\n", file=sys.stderr)
             return 1
+        try:
+            test_default_rotation(binary, workdir)
+        except Exception as e:  # noqa: BLE001
+            print(f"FAIL test_e2e: default rotation: {type(e).__name__}: {e}", file=sys.stderr)
+            return 1
+        steps.append("default rotation is 270 (upright on the TT7)")
         for s in steps:
             print(f"  ok   e2e: {s}")
     return 0

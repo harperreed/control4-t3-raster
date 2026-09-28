@@ -75,7 +75,7 @@ static void usage(FILE *out) {
             "  --fb-stride BYTES         with --fb-file: bytes per line (default W*BPP/8)\n"
             "  --fb-format NAME          with --fb-file: rgb565 or xrgb8888 (default from BPP)\n"
             "  --rotation DEG            0, 90, 180 or 270: degrees clockwise the logical image is turned\n"
-            "                            to land on the native framebuffer (default 90; UNVERIFIED on the TT7)\n"
+            "                            to land on the native framebuffer (default 270: upright on a docked TT7)\n"
             "  --data-dir PATH           token, device.json, last-frame.png (default /data/tt7/tt7d)\n"
             "  --sysfs-root PATH         where to read sysfs from (default /sys)\n"
             "  --proc-root PATH          where to read /proc files from (default /proc)\n"
@@ -109,7 +109,7 @@ static int parse_uint(const char *s, unsigned long max, unsigned long *out) {
 }
 
 static int parse_args(int argc, char **argv, struct config *c) {
-    *c = (struct config){.listen = "0.0.0.0:80", .fb = "/dev/fb0", .rotation = 90, .data_dir = "/data/tt7/tt7d",
+    *c = (struct config){.listen = "0.0.0.0:80", .fb = "/dev/fb0", .rotation = 270, .data_dir = "/data/tt7/tt7d",
                          .sysfs_root = "/sys", .proc_root = "/proc", .log_file = "/data/tt7/app.log",
                          .reboot_cmd = "reboot -f", .input_dir = "/dev/input", .max_frame_bytes = 8u << 20,
                          .timeout_ms = 30000, .fallback_timeout_s = 300, .ntp_marker = TIMESYNC_DEFAULT_MARKER};

@@ -26,7 +26,7 @@ Anything not measured is marked **unknown**. SPEC.md §3 says: discover, don't a
 | Pixel format | 16 bpp **RGB565**: red 11/5, green 5/6, blue 0/5 |
 | fb memory | `smem_len` 12582912 |
 | Backlight | `/sys/class/backlight/rk28_bl`, `max_brightness` 255 |
-| Logical orientation (1280×800 as docked) | **unknown**: needs a photo of the corner test pattern |
+| Logical orientation (1280×800 as docked) | **rotation 270** (at 90 the test frame was upside down; Doctor Biz, 2026-09-28) |
 
 ## Input
 
@@ -63,8 +63,7 @@ Neither has been exercised yet (SPEC §51: no audio or camera in v1).
 
 ## Open questions
 
-1. Which way is up: which corner of the 800×1280 fb is top-left when the panel sits on its dock (decides tt7d's default rotation).
-2. Dock Ethernet: which driver it uses, and whether it survives the init forcing OTG into device mode.
-3. Charging behaviour on the dock's own power adapter.
-4. Keycodes for power and volume on `rk29-keypad`, and gslX680's absolute axis ranges: both need a dump of EVIOCGABS/EVIOCGBIT or a logged press.
-5. Why the old partitions (`kernel`, `system`) read unstably while freshly written `boot` doesn't (gotchas.md).
+1. Dock Ethernet: which driver it uses, and whether it survives the init forcing OTG into device mode.
+2. Charging behaviour on the dock's own power adapter.
+3. Keycodes for power and volume on `rk29-keypad`, and gslX680's absolute axis ranges: both need a dump of EVIOCGABS/EVIOCGBIT or a logged press.
+4. Why the old partitions (`kernel`, `system`) read unstably while freshly written `boot` doesn't (gotchas.md).

@@ -18,10 +18,8 @@ a vendored TrueType rasterizer.
 - **Logical display**: 1280×800. `--rotation` (0/90/180/270) is how many
   degrees clockwise the logical image is turned to land on the native fb. At
   90, logical (x, y) goes to native (799 − y, x): the image's top-left corner
-  lands at the fb's top-right. **The default of 90 is UNVERIFIED.** Nobody has
-  yet photographed the panel on its dock showing which fb corner is up. Push
-  `tools/make-test-frame.py` output and look: if TOP-LEFT isn't top-left, try
-  `--rotation 270`.
+  lands at the fb's top-right. **The default is 270**: at 90 the test frame
+  was upside down on a docked TT7 (Doctor Biz, 2026-09-28), so 270 is upright.
 - **Frames**: the PNG is received in full, hashed, checked (size, SHA-256,
   dimensions), decoded into RGBA, converted into a RAM back buffer, and only
   then copied to the fb with one `memcpy`. A partial or bad frame never
@@ -712,7 +710,6 @@ curl -s http://<panel-ip>/api/v1/state | python3 -m json.tool | grep -A10 '"mqtt
   Safari and Firefox are untried. The CSP's `default-src 'self'` has to
   allow the same-origin `ws:` URL, which current browsers do (CSP Level 3).
 
-- The rotation default (90), until someone photographs the test frame on the dock.
 - Colours on the real glass. The driver reports RGB565 R11/G5/B0 and tt7d
   packs exactly that, but nobody has looked at a tt7d frame on the panel yet.
   The test frame's colour bars are there to check it.
