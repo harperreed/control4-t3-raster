@@ -144,8 +144,13 @@ $(B)/host/test_clockface: tt7d/test_clockface.c tt7d/test_common.h $(TT7D_LIB) $
 	gcc $(HOST_CFLAGS) -D_GNU_SOURCE $(TT7D_INC) -o $@ $< $(TT7D_LIB) $(B)/host/lodepng.o -lm
 
 # Host build of the real daemon for the end-to-end test. lodepng is compiled
-# as C (see third_party/lodepng/PROVENANCE).
-$(B)/host/lodepng.o: $(LODEPNG) third_party/lodepng/lodepng.h
+# as C (see third_party/lodepng/PROVENANCE). lodepng.defs holds LODEPNG_DEFS,
+# so changing them (the encoder on or off) rebuilds lodepng.o.
+$(B)/host/lodepng.defs: FORCE
+	@mkdir -p $(B)/host
+	@echo '$(LODEPNG_DEFS)' | cmp -s - $@ || echo '$(LODEPNG_DEFS)' > $@
+
+$(B)/host/lodepng.o: $(LODEPNG) third_party/lodepng/lodepng.h $(B)/host/lodepng.defs
 	@mkdir -p $(B)/host
 	gcc $(HOST_CFLAGS) $(LODEPNG_DEFS) -x c -c -o $@ $<
 
