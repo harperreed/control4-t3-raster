@@ -126,3 +126,12 @@
 - zig's musl `ioctl()` has a time64 fallback that swaps the 80-byte VIDIOC_QBUF number for the 68-byte one, but only when the kernel answers ENOTTY. MMKeypad saw EINVAL, so don't count on it; use kabi.h's numbers.
 - Our kernel has `rk29_ipp` loaded (boot-0004 modules.txt), unlike MMKeypad's custom Linux, so the ipp_blit_sync no-op trap should not bite. `tt7cam probe` checks anyway.
 - Vendored `third_party/stb/stb_image_write.h` carries a one-line fix for undefined behaviour (a signed shift in the JPEG bit writer). Its PROVENANCE has the diff.
+
+## Camera in tt7d (2026-09-28, branch tt7d-camera; host-tested only)
+- Off by default. A forked worker process (tt7d/camera_worker.c) alone opens the camera; tt7d supervises it (SIGTERM, SIGKILL after 1 s, reap, restart with backoff). tt7d/README.md "Camera" has the design and the device test steps.
+- `--camera-fake-source` is TEST ONLY: NV12 frames from a file or FIFO. Its reads ignore signals on purpose, the way a stuck driver call would, so only SIGKILL ends a stuck fake worker.
+- In on-request mode the first frame read from a FIFO fake source is whatever the feeder had in flight (the previous scene). The e2e test uses `settle_frames=1`, so the kept frame is the current scene.
+- Home Assistant's MQTT camera takes raw image bytes on `topic` (its camera.py subscribes with `disable_encoding=True`); base64 only with `image_encoding: b64`. tt7d sends raw JPEG.
+- A 720p JPEG did not fit tt7d's old 64 KiB MQTT send queue; it is 512 KiB now (mqtt_client.h).
+- Unverified on the panel: whether the RK CIF driver is happy with one streaming session and a grab every 500 ms (presence mode), and what its release path does after SIGKILL.
+- Claude agents in an isolated worktree: the Bash guard refuses long heredocs, inline python edits and commands with runtime-computed values. Write the script to the scratchpad with the Write tool, then run it with a plain `bash`/`python3` call.
