@@ -24,6 +24,8 @@ token_file = "~/.config/tt7/token"  # the panel's /data/tt7/tt7d/token; must be 
 url = "https://example.com/"        # any http(s):// or file:// URL; PUT /api/screens/tabletop/url rewrites this line
 # enabled = true                    # false: keep the entry, drive nothing
 # heartbeat_s = 60                  # POST /api/v1/heartbeat this often (keep it under tt7d's --fallback-timeout, 300)
+# region_max_fraction = 0.5         # send only changed rectangles (PATCH) while they cover at most this share of
+                                    # the screen, else a full frame; 0 sends full frames only
 
 [[screen]]
 name = "wall"

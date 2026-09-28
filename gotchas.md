@@ -174,3 +174,10 @@
 - Go TOML libraries drop comments when they re-encode, so `PUT /api/screens/{name}/url` edits the one `url = ...` line and re-parses the result before the rename.
 - Chrome for 2 idle 1280x800 tabs: 14 processes, about 450 MiB PSS.
 - **tt7-server S2 on real panels (2026-09-28):** `build/server/tt7-server -config <screens.toml>` on this machine drove both panels at once with a `file://` demo page. Both were reachable, frames went out, and 12 taps on the tabletop glass incremented the page's counter. Touches often arrive tagged with the previous frame_id (the page repaints between taps); the server logs that and delivers them anyway, which is correct.
+
+## Region updates, PATCH /api/v1/frame (2026-09-28, branch dirty-rects; host-tested only)
+- A patched frame's `sha256` is `sha256(<base sha256 hex> + <request body>)`, not a hash of its pixels, so after a PATCH `/frame` `sha256` no longer matches the bytes of `/frame/image` (a PUT frame's still does). Hashing the 4 MB RGBA took 17 ms on the dev host; the A9 would pay that on every tap.
+- tt7d's back buffer must equal the frame on screen whenever `on_screen` is set: a PATCH copies only its rectangles from it to the fb. The fallback clock draws over the back buffer and clears `on_screen`, so PATCH answers 409 until the next PUT; a PUT whose persist fails redraws the kept RGBA into the back buffer.
+- The golden container `tt7d/test/fixtures/regions-v1.bin` is written by Go (`go test ./internal/regions -run TestGoldenVector -update`) and checked by Go, C and the Python e2e. Its PNG bytes come from Go's encoder; the tests compare framing and decoded pixels, so a Go upgrade does not break them.
+- The wall unit's image (build/tt7-wall-000fff80e822-boot.img, built 11:32 on 2026-09-28) has tt7d 4c1fc61-dirty with `PUT /api/v1/system/update` and the release-selecting `/usr/bin/tt7-app`, so a bundle upload needs no bootstrap there, as long as no older `/data/tt7/app` overrides the image's tt7-app (checked by reading the image, not the panel).
+- `server-check` now runs the server e2e through uv with pinned Pillow 12.3.0, to decode Chrome's and tt7d's PNGs.

@@ -457,6 +457,147 @@ Example:
 
 Raw framebuffer formats are optimization paths, not v1 requirements.
 
+Region updates (§10.1) are advertised as `display.frame_patch`:
+`{"content_type": "application/x-tt7-regions", "version": 1, "max_regions": 16}`.
+
+---
+
+## 10.1 Region updates (dirty rectangles)
+
+Measured on the tabletop (2026-09-28): a tap took 0.7–1.5 s. A full
+1280×800 PNG (about 56 KB) crossed the panel's weak Wi-Fi in 0.4–1.3 s, and
+the A9 then spent 0.2–0.3 s decoding and rotating all of it, even when a
+button press changed about 500×300 pixels. A region update sends and redraws
+only what changed. It works for any page: the server finds the changes by
+comparing pixels, so the page needs no help.
+
+```text
+PATCH /api/v1/frame
+Content-Type: application/x-tt7-regions
+Authorization: Bearer <token>
+X-Base-Frame-ID: <the frame this applies to>      required
+X-Frame-ID: <the resulting frame's id>            optional; generated as for PUT
+X-Frame-SHA256: <the resulting frame's sha256>    optional; checked if present
+X-Persist: false                                  optional; true is refused
+Content-Length: <n>                               required
+
+<container>
+```
+
+**Why PATCH on `/api/v1/frame`.** It changes part of the one frame resource
+that `PUT` replaces and `GET` describes (RFC 5789), so the frame keeps a
+single URL, a single `Allow` list (`GET, PUT, PATCH`), and a single failure
+counter. A separate `/frame/regions` path would suggest a second resource.
+
+**Why a small binary container.** The whole batch arrives in one body with a
+length, so it is atomic like a PUT, and the A9 reads it with a few
+big-endian loads and no parser. Multipart needs boundary scanning and
+per-part headers for no gain. One PNG per request with `X-Region` headers
+cannot be atomic across rectangles.
+
+### Byte layout (version 1)
+
+All integers are unsigned, big-endian.
+
+```text
+offset          size  field
+0               4     magic "TT7R"
+4               1     version = 1
+5               1     reserved = 0
+6               2     n: number of regions, 0..16
+8 + 12*i        2     x      region i, logical pixels (1280×800 space)
+10 + 12*i       2     y
+12 + 12*i       2     w      >= 1
+14 + 12*i       2     h      >= 1
+16 + 12*i       4     png_len
+8 + 12*n        ...   the n PNGs back to back, in record order, png_len bytes each
+```
+
+The body ends exactly after the last PNG. Each PNG is exactly w×h pixels
+and holds the new pixels of the logical rect (x, y, w, h). Regions apply in
+order; where two overlap, the later one wins. The panel rotates them into
+native coordinates with the same code that draws full frames.
+
+`tt7d/test/fixtures/regions-v1.bin` is a golden request body, described in
+`regions-v1.txt` next to it. Both the panel's C test and the server's Go test
+check it, so the two sides cannot drift apart.
+
+### Validation (nothing changes on screen unless all of it passes)
+
+| Check | Reply |
+|---|---|
+| Content-Type is not `application/x-tt7-regions` | 415 `unsupported_media_type` |
+| No `X-Base-Frame-ID` | 400 `missing_base_frame_id` |
+| `X-Persist: true` | 400 `persist_not_supported` |
+| The base is not the frame on screen: the panel restarted without it, another sender replaced it, it was never shown, or the fallback clock covers it | 409 `base_mismatch`, with `current_frame_id` (what the screen shows, or null) |
+| Bad magic or reserved byte, truncated records or PNGs, bytes after the last PNG | 400 `invalid_regions` (`region` when one is at fault) |
+| Version other than 1 | 400 `unsupported_regions_version` |
+| More than 16 regions | 400 `too_many_regions`, `max` |
+| A rect that is empty or not inside 1280×800 | 422 `region_out_of_bounds`, `region` |
+| Regions whose areas add up to more than the screen | 422 `regions_too_large` |
+| `X-Frame-SHA256` differs from the resulting sha256 | 400 `sha256_mismatch`, `header`, `computed` |
+| A PNG that does not decode | 422 `invalid_image`, `region`, `detail` |
+| A PNG that is not its record's w×h | 422 `region_size_mismatch`, `region`, `expected`, `received` |
+
+The body as a whole is limited by `max_frame_bytes` (413). tt7d decodes every
+region before it changes a pixel, then updates its logical copy of the frame
+and redraws and presents only the rectangles. Refusals count in `/state`
+`frames.rejected` like refused PUTs (§42).
+
+### The frame's SHA-256
+
+`GET /frame` `sha256` names the frame's content:
+
+- after a PUT: `sha256(PNG bytes)`, as before (and what `/frame/image` returns);
+- after a PATCH: `sha256(base_sha256 || body)`, where `base_sha256` is the
+  base frame's `sha256` as 64 lowercase hex characters (64 ASCII bytes) and
+  `body` is the whole request body.
+
+Both sides know it without hashing pixels. Hashing the composed 1280×800 RGBA
+(4 MB) instead would cost about 17 ms on the dev host with tt7d's sha256, and
+several times that on the A9 (not measured), on every tap. The chained hash
+is deterministic, and it differs whenever the base or the patch differs. Its
+limit: two different histories that end in the same pixels get different
+hashes, so a PUT after a PATCH is never deduplicated against it (§11); it is
+simply drawn.
+
+An empty batch (`n = 0`) changes no pixels. Like a duplicate PUT (§11) it
+changes only `frame_id` and `received_at`, keeps `sha256`, replies
+`"deduplicated": true`, and counts as a heartbeat.
+
+### Persistence
+
+A PATCH cannot be persisted. `X-Persist: true` is refused with 400
+`persist_not_supported`; send a whole frame with PUT to persist. Persisting a
+patched frame would mean encoding the whole frame and writing flash on the
+tap path, which is what region updates exist to avoid. After a PATCH, `/frame`
+reports `persisted: false`.
+
+### What `/frame` and `/frame/image` report
+
+`GET /frame` adds `updated_via` (`"full"` or `"regions"`) and `regions` (the
+count, or null after a PUT). `bytes` is the size of the request body that
+made the frame (the PNG for a PUT, the container for a PATCH).
+`GET /frame/image` returns the frame as it is now: the PNG as received after a
+PUT, or, after a PATCH, the composed frame encoded as PNG on the first request
+and kept until the frame changes. Event and `/state` `frame_id`s name the
+patched frame.
+
+### Server side (tt7-server)
+
+The server keeps the RGBA of the frame the panel is known to show. For each
+capture it compares pixels exactly in 32×32 tiles. Touching changed tiles
+form groups, each group becomes its bounding box, and boxes are merged
+(overlapping ones first, then the pair that adds the least area) until at
+most 4 remain. It sends a full PUT instead when the base is unknown (start,
+panel restart, fallback clock, error), when the rectangles cover more than
+`region_max_fraction` of the screen (default 0.5; 0 turns regions off), or
+when the region container would not be smaller than the full PNG. A refused
+PATCH is followed at once by a full PUT, which becomes the new base.
+
+The first capture after each touch down and each touch up skips the
+`max_fps` wait (it is still deduplicated), so a tap's result is sent at once.
+
 ---
 
 # 11. Frame deduplication
@@ -511,7 +652,9 @@ Example:
   "width": 1280,
   "height": 800,
   "content_type": "image/png",
-  "persisted": false
+  "persisted": false,
+  "updated_via": "regions",
+  "regions": 1
 }
 ```
 
@@ -1902,15 +2045,7 @@ avoids PNG decode.
 
 ### Dirty rectangles
 
-```text
-x
-y
-width
-height
-pixels
-```
-
-allow partial updates.
+Done: `PATCH /api/v1/frame` (§10.1), measured first on the tabletop.
 
 ### Compression
 

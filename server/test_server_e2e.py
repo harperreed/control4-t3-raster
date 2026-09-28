@@ -563,7 +563,9 @@ region_max_fraction = 0
                          step=0.005)
                 lat.append((time.monotonic() - t0) * 1000)
                 time.sleep(0.5)
-            info.append("touch -> new frame on the panel fb: " + ", ".join(f"{x:.0f} ms" for x in lat))
+            s_a = screen_status(admin_port, "a")
+            info.append("touch -> new frame on the panel fb: " + ", ".join(f"{x:.0f} ms" for x in lat)
+                        + f" (counter page; last update {s_a['last_update']}, {s_a['last_push_bytes']} bytes)")
             clicks_a = 3
 
             steps.append(f"3a. heartbeats (every {HEARTBEAT_S} s) keep fallback.active false past the "

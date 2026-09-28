@@ -58,7 +58,7 @@ type Status struct {
 	LastErrorAt     *time.Time `json:"last_error_at"`
 
 	// Frame traffic: every accepted update is a full frame (PUT) or regions (PATCH).
-	BytesSent       int64    `json:"bytes_sent"`        // request bodies the panel accepted
+	BytesSent       int64    `json:"bytes_sent"` // request bodies the panel accepted
 	FullFrames      int64    `json:"full_frames"`
 	RegionFrames    int64    `json:"region_frames"`
 	BaseMismatches  int64    `json:"base_mismatches"`   // PATCHes refused because the panel showed another frame
@@ -90,7 +90,7 @@ type Screen struct {
 	capture  []byte // the newest frame from Chrome
 	urgent   bool   // capture (or one it replaced) is a touch's result: skip the max_fps wait
 	bypass   Bypass
-	forget   bool // set by Repush, consumed by the push loop
+	forget   bool   // set by Repush, consumed by the push loop
 	shown    []byte // the last frame the panel accepted (preview.png)
 	st       Status
 	seq      uint64
