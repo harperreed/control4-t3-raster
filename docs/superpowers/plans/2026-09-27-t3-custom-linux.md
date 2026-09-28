@@ -1,7 +1,7 @@
 # T3 tabletop → custom Linux display
 
 ## Now
-- Step: M4+M5+M6 merged on main (45af713+), make check green; pushing to github.com/harperreed/control4-t3-raster. Panel still runs M4-only tt7d (6bc0922); merged tt7d not deployed yet
+- Step: parallel agents in worktrees: M3 input/WebSocket (branch tt7d-m3-input) and fallback clock + NTP (branch tt7d-fallback-clock), both from main. Then merge, then camera integration (from cam-spike), then web update
 - Next: when docked on its power adapter: resume `scripts/dump-via-ssh.sh tt7-stock-kernel-2026-09-27 system`, then cache/userdata/user; verify the watchdog fixes a real stall (usb-watchdog.log). Then docs/hardware-inventory.md + recovery doc (closes M0), then tt7d M1/M2
 - Approved: "perfect" (2026-09-27): build the first boot.img (MMKeypad init + BusyBox + Dropbear + discovery probe + test pattern). BUILD ONLY, flashing needs a separate go-ahead
 - Approved: "Yes, flash it (Recommended)" (2026-09-27): flash build/tt7-probe-boot.img (sha256 aa232eaf16b85571…) to boot
