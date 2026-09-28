@@ -1,0 +1,36 @@
+TweetNaCl: a compact NaCl implementation, vendored for tt7d's update signature check (ed25519).
+
+Source:   https://tweetnacl.cr.yp.to/software.html
+Version:  20140427 (the latest release listed on that page on 2026-09-28)
+License:  public domain ("TweetNaCl is a self-contained public-domain C library",
+          https://tweetnacl.cr.yp.to/index.html, read 2026-09-28)
+Fetched:  curl -sSfL https://tweetnacl.cr.yp.to/20140427/<file>
+
+sha256 of the upstream files as fetched:
+02e65bc3013ff2168983365e55906bc783c4c7e0a60d8100f17bb303a17175c4  tweetnacl.c
+43f29ad721d9927b747b0100ab4160c119e7bb180c7c98a66e4bf79d31244287  tweetnacl.h (unmodified here)
+
+One change to tweetnacl.c (sha256 here:
+6c88d4e8c75200cb9a236bd9c8d6ab03172ed8484628032a6e172875cee31620). Two
+left shifts of a signed carry that can be negative, which is undefined
+behaviour in C11 and which UBSan reports in the host tests, became the
+equivalent multiplications:
+
+    car25519: o[i]-=c<<16;          ->  o[i]-=c*65536;
+    modL:     x[j] -= carry << 8;   ->  x[j] -= carry * 256;
+
+A multiplication by 2^16 or 2^8 is what the shift was written to compute,
+negative carries included, and it cannot overflow here (the carries are far
+below 2^47). The RFC 8032 vectors in tt7d/test_bundle.c pass before and after.
+
+Use: tt7d/sign.c includes tweetnacl.c and calls only crypto_sign_open (ed25519
+verify, with TweetNaCl's own SHA-512). It silences two warnings for this file
+only (-Wsign-compare, -Wunterminated-string-initialization), which both gcc and
+zig cc raise on this source. TweetNaCl needs a `randombytes` symbol for
+key generation, which tt7d never does; sign.c supplies one that aborts.
+
+Why TweetNaCl and not Monocypher: one file, about 800 lines, public domain, and
+it already includes the SHA-512 that ed25519 needs. Monocypher is faster, but
+as far as we know (not re-checked on 2026-09-28) its default signature is
+EdDSA over BLAKE2b, with RFC 8032 ed25519 in a separate optional file. Speed
+does not matter for one signature check per update.
