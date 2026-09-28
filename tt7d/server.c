@@ -50,6 +50,7 @@ struct conn {
     size_t out_off;
     char log_line[160];
     int status; /* of the reply; 0 until one is decided */
+    int taken;  /* take_over() has the socket: forget this connection */
 };
 
 static int64_t now_ms(void) {
@@ -194,6 +195,11 @@ static void maybe_dispatch(struct conn *c, const struct server_config *cfg, cons
         return;
     }
     if (c->body_got < c->body_len) return;
+    if (h->take_over && h->take_over(h->ctx, c->fd, &c->req)) {
+        c->fd = -1; /* the socket belongs to the taker now */
+        c->taken = 1;
+        return;
+    }
     h->handle(h->ctx, &c->req, c->body, c->body_len, &resp);
     conn_reply(c, &resp, cfg, h);
     sb_free(&resp.body);
@@ -202,6 +208,7 @@ static void maybe_dispatch(struct conn *c, const struct server_config *cfg, cons
 /* Read what is available. Returns -1 when the connection should close now. */
 static int conn_read(struct conn *c, const struct server_config *cfg, const struct server_handlers *h) {
     for (;;) {
+        if (c->taken) return -1;
         if (c->state != READING) return 0;
         char drop[4096];
         char *dst;
@@ -320,7 +327,7 @@ int server_run(const struct server_config *cfg, const struct server_handlers *h,
     if (max < 1) max = 1;
     if (max > MAX_CONNECTIONS_CAP) max = MAX_CONNECTIONS_CAP;
     struct conn *conns[MAX_CONNECTIONS_CAP];
-    struct pollfd pfd[MAX_CONNECTIONS_CAP + 2];
+    struct pollfd pfd[MAX_CONNECTIONS_CAP + 1 + SERVER_MAX_EXTRA_FDS];
     int n = 0;
 
     for (;;) {
@@ -335,21 +342,15 @@ int server_run(const struct server_config *cfg, const struct server_handlers *h,
             if (left < 0) left = 0;
             if (wait < 0 || left < wait) wait = left;
         }
-        int extra = -1; /* index of the poll_prepare descriptor, if any */
-        if (h->poll_prepare) {
-            struct pollfd x;
-            h->poll_prepare(h->ctx, &x, &wait);
-            if (x.fd >= 0) {
-                extra = np;
-                pfd[np++] = x;
-            }
-        }
+        int extra = np, nextra = 0; /* where the poll_prepare descriptors start, and how many */
+        if (h->poll_prepare) nextra = h->poll_prepare(h->ctx, pfd + extra, SERVER_MAX_EXTRA_FDS, &wait);
+        np += nextra;
         if (poll(pfd, (nfds_t)np, wait > 0x7fffffff ? 0x7fffffff : (int)wait) < 0 && errno != EINTR) {
             fprintf(stderr, "tt7d: poll: %s\n", strerror(errno));
             sleep(1);
             continue;
         }
-        if (h->poll_service) h->poll_service(h->ctx, extra >= 0 ? pfd[extra].revents : 0);
+        if (h->poll_service) h->poll_service(h->ctx, pfd + extra, nextra);
         int base = n < max ? 1 : 0;
         int nconn = n; /* accept after servicing, so pfd indexes stay valid */
         for (int i = 0; i < nconn; i++) {
@@ -373,7 +374,7 @@ int server_run(const struct server_config *cfg, const struct server_handlers *h,
             }
             if (done) {
                 log_done(c);
-                shutdown(c->fd, SHUT_WR);
+                if (c->fd >= 0) shutdown(c->fd, SHUT_WR);
                 conn_free(c);
                 conns[i] = NULL;
             }

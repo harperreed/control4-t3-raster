@@ -84,6 +84,9 @@ class Daemon:
         self.sysfs = os.path.join(workdir, "sysfs")
         self.backlight = os.path.join(self.sysfs, "class", "backlight", "rk28_bl")
         self.reboot_marker = os.path.join(workdir, "rebooted")
+        # Never the host's /dev/input: tests that want input put FIFOs here (test_input_e2e.py).
+        self.input_dir = os.path.join(workdir, "input")
+        os.makedirs(self.input_dir, exist_ok=True)
         shutil.copytree(FIXTURE, self.sysfs)
         self.port = free_port()
         self.proc = None
@@ -96,7 +99,7 @@ class Daemon:
             [self.binary, "--listen", f"127.0.0.1:{self.port}", "--fb-file", self.fb,
              "--fb-geometry", f"{NATIVE_W}x{NATIVE_H}x16", "--fb-stride", str(STRIDE), "--fb-format", "rgb565",
              "--rotation", "90", "--data-dir", self.data, "--sysfs-root", self.sysfs,
-             "--proc-root", PROC_FIXTURE, "--log-file", self.log_path,
+             "--proc-root", PROC_FIXTURE, "--log-file", self.log_path, "--input-dir", self.input_dir,
              "--reboot-cmd", "touch " + shlex.quote(self.reboot_marker),
              "--request-timeout-ms", str(TIMEOUT_MS)] + self.extra_args,
             stdout=log, stderr=subprocess.STDOUT)

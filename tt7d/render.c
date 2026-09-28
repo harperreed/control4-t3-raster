@@ -36,6 +36,13 @@ void render_map(int rotation, uint32_t logical_w, uint32_t logical_h, uint32_t x
     }
 }
 
+void render_unmap(int rotation, uint32_t native_w, uint32_t native_h, uint32_t nx, uint32_t ny, uint32_t *x,
+                  uint32_t *y) {
+    /* Turning back by `rotation` is turning forward by 360 - rotation, with
+     * the native framebuffer as the image being turned. */
+    render_map((360 - rotation) % 360, native_w, native_h, nx, ny, x, y);
+}
+
 void render_rgba(const struct fbd_surface *dst, int rotation, const uint8_t *rgba, uint32_t logical_w,
                  uint32_t logical_h) {
     for (uint32_t y = 0; y < logical_h; y++) {

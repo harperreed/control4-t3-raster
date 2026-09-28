@@ -98,3 +98,10 @@
 - MMKeypad's blocker doesn't apply here: `rk29_ipp` loads on our unit's kernel (they hit a 3.0.8 vs 3.0.36 vermagic wall).
 - Stick to 1280×720 (sensor native). The driver has BUG() paths for sizes that overflow `rk29_vipmem`. After a clean STREAMOFF no camera buffer stays reserved. The dmesg noise ("Format is Invalidate", "get cif ldo failed!") is normal for this driver.
 - Privacy: snapshots stay out of git and off the panel's /data. Delete them from /tmp after pulling.
+
+## tt7d input, M3 (2026-09-28, branch tt7d-m3-input; host-tested only)
+- The touch/button keycodes and ranges WERE partly recorded: `hardware/discovery/boot-0002-up22s/input-devices.txt` (tt7probe's EVIOCGABS dump) has gslX680 ABS_MT_SLOT 0..10, POSITION_X 0..1280, POSITION_Y 0..800, and rk29-keypad keys 114, 115, 116, 143. Which physical button sends which code is still unknown.
+- gslX680's X range (0..1280) is the fb's long side, yet the fb is 800 wide. tt7d scales raw x across the fb width, as tt7probe did (its dots "landed under the finger"). If corners come out swapped on the glass, that assumption is the first suspect.
+- Browsers cannot set `Authorization` on a WebSocket, so `GET /api/v1/events` also takes `?token=`. The server logs only the path, never the query.
+- Host tests cannot fake evdev (`/dev/uinput` needs root). tt7d's `--input-dir` takes FIFOs; their capabilities come from the sysfs modalias, their ranges from `eventN.absinfo` (tt7d/README.md "Testing without evdev").
+- `pkill -f <pattern>` from a Claude Bash call also kills the calling shell when the pattern appears in the command line (exit 144). Kill by PID.

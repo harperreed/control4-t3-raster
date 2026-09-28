@@ -1,8 +1,9 @@
 # tt7d: the TT7 network display daemon
 
 tt7d shows PNG frames that a server PUTs over HTTP on the C4-TT7's framebuffer
-(SPEC.md milestones M1 and M2), and serves a local admin control panel at `/`
-(M4, see "Control panel" below). It is one static C binary with no threads and
+(SPEC.md milestones M1 and M2), streams touches and button presses back over a
+WebSocket (M3, see "Input (M3)" below), and serves a local admin control panel
+at `/` (M4, see "Control panel" below). It is one static C binary with no threads and
 no libraries beyond musl and a vendored PNG decoder.
 
 ## Design in brief
@@ -61,7 +62,8 @@ no libraries beyond musl and a vendored PNG decoder.
 
 ## API (`/api/v1`)
 
-Reads need no auth, except `GET /logs` and `GET /config/mqtt`. `PUT /frame`,
+Reads need no auth, except `GET /logs`, `GET /config/mqtt` and the
+`GET /events` WebSocket. `PUT /frame`,
 `GET /logs`, both `/config/mqtt` methods and every control panel action need
 `Authorization: Bearer <token>` (`/info` lists them under `auth.required_for`).
 `GET /frame/image` is also unauthenticated in v1: it returns the frame that is
@@ -69,8 +71,9 @@ already visible on the glass. Revisit this when the panel shows anything private
 
 | Endpoint | Returns |
 |---|---|
-| `GET /info` | `device_id`, `model`, `firmware_version`, `build`; `display` {`width`, `height`, `rotation`, `frame_formats`, `max_frame_bytes`, `native` {`width`, `height`, `format`, `stride`, `bits_per_pixel`}}; `capabilities` read from sysfs at request time; `auth` |
-| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`}, `power`, `network.interfaces`, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`} |
+| `GET /info` | `device_id`, `model`, `firmware_version`, `build`; `display` {`width`, `height`, `rotation`, `frame_formats`, `max_frame_bytes`, `native` {`width`, `height`, `format`, `stride`, `bits_per_pixel`}}; `capabilities` read from sysfs at request time, plus `capabilities.input` from the open input devices (see "Input (M3)"); `auth` |
+| `GET /state` | `time` (UTC; the clock is wrong until something sets it), `uptime_s`, `daemon_uptime_s`, `display` {`on`, `brightness`, `frame_id`, `frame_age_s`}, `power`, `network.interfaces`, `frames` {`accepted`, `deduplicated`, `rejected`, `last_error`}; `mqtt` {`enabled`, `connected`, `broker` (host:port, never credentials), `client_id`, `topic_base`, `last_publish`, `last_error`, `reconnects`, `dropped`}; `input` {`last_touch`, `last_button` (ISO times or null), `event_clients`, `event_clients_dropped_slow`} |
+| `GET /events` | The input event stream, a WebSocket. Needs the token (see "Input (M3)") |
 | `GET /config/mqtt` | The MQTT settings in effect (see below). Needs the token |
 | `PUT /config/mqtt` | Body: a JSON object of MQTT settings. Needs the token and `Content-Type: application/json`; at most 4096 bytes |
 | `GET /frame` | Frame metadata: `frame_id`, `sha256`, `received_at`, `displayed_at`, `width`, `height`, `content_type`, `bytes`, `persisted`, `deduplicated`, `restored`. 404 `no_frame` before the first frame |
@@ -133,14 +136,160 @@ Every error is JSON: `{"error": "<code>", "message": "...", ...}`.
 | 415 | `unsupported_media_type` | `supported` |
 | 422 | `invalid_image` | `detail` (lodepng's reason) |
 | 422 | `invalid_dimensions` | `expected` [w, h], `received` [w, h] |
+| 426 | `upgrade_required`: `GET /events` without a WebSocket upgrade (with `Upgrade` and `Sec-WebSocket-Version: 13` headers) | |
 | 431 | `headers_too_large` | |
 | 500 | `persist_failed` (nothing changed on screen), `write_failed` (`PUT /config/mqtt`), `internal_error`, `reboot_failed` | |
 | 500 | `backlight_write_failed` | `device`, `detail` |
-| 503 | `no_backlight` | |
+| 503 | `no_backlight`, `too_many_clients` (all 8 event stream slots taken) | |
 | 505 | `http_version_not_supported` | |
 
 Every refused `PUT /frame` counts in `/state` `frames.rejected`, and its code
 goes to `frames.last_error` (SPEC §42).
+
+## Input (M3)
+
+### Design
+
+- **Devices by capability**, not by name. tt7d lists
+  `<sysfs>/class/input/inputN/eventM` and opens `<--input-dir>/eventM`
+  (default `/dev/input`) read-only and non-blocking. `EVIOCGBIT` says what
+  it can send:
+  - **touch**: `ABS_MT_POSITION_X/Y` (multitouch protocol B if it also has
+    `ABS_MT_SLOT`, else A), or `ABS_X/Y` plus `BTN_TOUCH` (single touch);
+  - **buttons**: `EV_KEY` with at least one key outside the `BTN_*` ranges.
+
+  Axis ranges and the slot count come from `EVIOCGABS`. Anything else is
+  ignored. Going by the modaliases in `hardware/discovery`, the TT7 should
+  give `event1` gslX680 (protocol B, 11 slots) and `event0` rk29-keypad
+  (keys 114, 115, 116, 143).
+- **One poll loop.** The devices and the WebSocket clients sit in the same
+  `poll()` as HTTP and MQTT (`server_handlers.poll_prepare/poll_service`,
+  which now take several descriptors). Nothing blocks.
+- **Device loss**: a read error (`ENODEV`) or end of file closes the device.
+  While there is no touchscreen or no button device, tt7d looks again every
+  5 s. Pointers that were down when a touchscreen vanished get their `up`.
+  After `SYN_DROPPED` (the kernel's buffer overflowed), tt7d skips events up
+  to the next `SYN_REPORT`.
+- **Touch state machine** (`touch.c`, pure, unit-tested): protocol B slots and
+  tracking ids, protocol A contact lists (matched by tracking id, else by
+  order), and single touch. The pointer id is the slot (B) or a small id
+  kept for the contact's life (A). On an MT device the kernel's pointer
+  emulation (`ABS_X/Y`, `BTN_TOUCH`) is ignored.
+- **Throttle**: at most one `move` per pointer per 16 ms. A held-back move
+  goes out when its 16 ms are up, and a pointer's final position always goes
+  out right before its `up`. `down` and `up` are never delayed. No gestures
+  (SPEC §14).
+- **Coordinates**: raw values are scaled over their `EVIOCGABS` range onto
+  the native framebuffer (x across its width, y down its height), as
+  tt7probe drew its dots, which landed under the finger. Then
+  `render_unmap()` turns them back by `--rotation`. It is the inverse of
+  `render_map()`, which draws the frames, so the rotation math lives in one
+  place. `x`/`y` are logical pixels (0..1279, 0..799); `nx`/`ny` are `x/1280`
+  and `y/800`.
+- **Buttons**: key code → `power` (116), `volume_up` (115), `volume_down`
+  (114), else `key_<code>`. Autorepeat (value 2) is dropped. Button events
+  also go to MQTT `event/button`, not retained. Touch never goes to MQTT.
+
+### The event stream: `GET /api/v1/events` (WebSocket)
+
+RFC 6455, version 13, on the API's port. tt7d sends text frames, one JSON
+object each, never fragmented. The first is `hello`:
+
+```json
+{"type":"hello","device_id":"tt7-8c9240","width":1280,"height":800,"rotation":90,"touch":true,
+ "frame_id":"smoke-frame","timestamp":"2026-09-28T12:52:50.101Z","monotonic_ms":57302211}
+{"type":"touch","action":"down","pointer":0,"x":639,"y":132,"nx":0.4992,"ny":0.1650,
+ "frame_id":"smoke-frame","timestamp":"2026-09-28T12:52:51.065Z","monotonic_ms":57303175}
+{"type":"button","button":"power","action":"press","code":116,
+ "frame_id":"smoke-frame","timestamp":"2026-09-28T12:52:51.366Z","monotonic_ms":57303476}
+```
+
+`action` is `down`, `move` or `up` for touch and `press` or `release` for
+buttons. `frame_id` is the frame on screen when tt7d read the event: null
+before the first frame, or for a restored frame whose id was lost.
+`timestamp` is the wall clock (wrong until something sets the clock), and
+`monotonic_ms` is `CLOCK_MONOTONIC`. tt7d takes both when it reads the event.
+
+- **Clients**: up to 8. A ninth gets 503 `too_many_clients`.
+- **Slow clients never hold anything up.** Each client has a 64 KiB send
+  queue on top of a 32 KiB kernel send buffer. When an event does not fit,
+  tt7d drops that client with close code 1008 and counts it in `/state`
+  `input.event_clients_dropped_slow`. Frames and the other clients carry on.
+  The e2e test floods a client that never reads while it PUTs frames.
+- **Keepalive**: tt7d pings every 30 s and drops a client that has sent
+  nothing, not even a pong, for 75 s. Browsers answer pings on their own.
+- **From the client**: frames must be masked (else close 1002). Pings get
+  pongs, and a close gets a close with the same code. Fragmented messages
+  get close 1003, frames over 1 KiB get 1009, and text or binary messages
+  are read and ignored.
+
+**Auth (the choice).** The stream shows what people touch, so it needs the
+token, like every other private endpoint. Browsers cannot set an
+`Authorization` header on a WebSocket, so tt7d takes **either**
+`Authorization: Bearer <token>` **or** `?token=<token>` (percent-decoded).
+If the header is present, it wins. Both go through the same constant-time
+compare (`token_equal`). The query string never reaches the log: tt7d logs
+only the path of failed requests, and the e2e test checks the log for the
+token. The control panel sends `?token=` because it has to;
+`tools/events.py` sends the header unless given `--query-token`. The cost:
+a URL with the token in it could end up in a proxy's or a browser
+extension's logs. On a LAN with plain HTTP, anyone who can sniff the URL
+can sniff the header too, so nothing that was strong gets weaker. We passed
+over two alternatives: the token in `Sec-WebSocket-Protocol` (more code in
+every client), and short-lived tickets from a separate POST (more state in
+tt7d).
+
+```sh
+TT7_TOKEN_FILE=~/.config/tt7/token tools/events.py <panel-ip>     # one JSON line per event
+tools/events.py <panel-ip> --count 5 --timeout 30                 # stop after 5 events
+```
+
+`tools/events.py` needs only the Python standard library.
+
+### `/info` and `/state`
+
+`/info` `capabilities.input` looks like
+`{"events":"/api/v1/events","touch":{"device":"gslX680","protocol":"mt_b","pointers":11,"raw":{"x":{"min":0,"max":1280},"y":{"min":0,"max":800}},"coordinates":{"width":1280,"height":800,"space":"logical"},"move_interval_ms":16},"buttons":["volume_down","volume_up","power","key_143"]}`.
+`touch` is null without a touchscreen. `buttons` lists every key the button
+devices report through `EVIOCGBIT`, so a code the driver claims without a
+physical button behind it shows up too. The API table covers `/state` `input`.
+
+### Testing without evdev
+
+evdev cannot be faked without `/dev/uinput`, which needs root. So
+`--input-dir` may point at a directory of **named pipes** named like the
+sysfs nodes (`event0`, `event1`) that carry native `struct input_event`
+records (24 bytes each on x86-64, 16 on the panel). A pipe is not an evdev
+device, so `EVIOCGBIT` and `EVIOCGABS` fail on it. tt7d then reads the
+capabilities from `<sysfs>/class/input/inputN/modalias` and the axis ranges
+from `<input-dir>/eventM.absinfo` (lines of `<code> <min> <max>`, e.g.
+`0x35 0 1280`). On the panel the ioctls work, so neither is used. A regular
+file also works and is read once. `tt7d/test_input_e2e.py` uses the panel's
+sysfs fixture and the ranges tt7probe recorded on the panel.
+
+### First run on the panel: what to look for
+
+Run `tail -f /data/tt7/app.log` as the new tt7d starts:
+
+```text
+tt7d: input: event0 "rk29-keypad": buttons (capabilities from EVIOCGBIT): 114=volume_down 115=volume_up 116=power 143=key_143
+tt7d: input: event1 "gslX680": touch, multitouch protocol B, 11 pointer(s), raw x 0..1280 y 0..800 (EVIOCGABS; capabilities from EVIOCGBIT)
+```
+
+- If a line is missing, or says `cannot open`, check `ls -l /dev/input`
+  (tt7-app runs `mdev -s` to make the nodes).
+- The raw ranges: tt7probe recorded x 0..1280 and y 0..800 (boot-0002),
+  yet the fb is 800 wide and 1280 tall. tt7d scales them as tt7probe did
+  (x across the fb width). Run `tools/events.py` and touch the four corners.
+  At the right `--rotation`, the corner showing the test frame's TOP-LEFT
+  label reads about (0, 0). If x and y come out swapped or mirrored, the
+  driver's axes do not match the fb, and tt7d needs an axis swap/flip
+  option, which does not exist yet (a code change).
+- Press each button once. The `code` in each event says which key is which;
+  nobody has recorded that yet (docs/hardware-inventory.md, open question 4).
+- `tt7probe log` still writes the raw records to
+  `/data/tt7/discovery/boot-*/input-events.log`. Compare them if an event
+  looks wrong.
 
 ## Control panel
 
@@ -154,16 +303,19 @@ from `/frame/image?v=<frame id>:<accepted>` only when the frame changes.
 Sections: Overview (preview, frame, age, brightness, power, battery as an
 estimate, uptime, per-interface IPs, online badge), Display (preview,
 resolution, native format and stride, rotation, brightness slider, wake,
-blank, test pattern), Hardware (`/hardware` as a collapsible tree), System
+blank, test pattern), Input (once unlocked: the live event stream, newest
+first, and a dot on both previews where the screen was last touched; it
+reconnects with backoff), Hardware (`/hardware` as a collapsible tree), System
 (`/system`; the time is flagged when the year is before 2024), Logs, and
 Actions (reboot, behind a confirm dialog).
 
 **The token.** The page itself and the read-only data need no token. Paste
 the token (`/data/tt7/tt7d/token`) into the field and press Unlock: the page
 first tries it on `GET /logs?lines=1` and keeps it only if tt7d accepts it. It
-lives in `sessionStorage`, so it is gone when the tab closes, and goes out
-only as an `Authorization: Bearer` header. It never appears in a URL, the
-HTML, or tt7d's log (the e2e test checks the log). Until then the page shows
+lives in `sessionStorage`, so it is gone when the tab closes. It goes out as
+an `Authorization: Bearer` header, except in the event stream's WebSocket
+URL (`?token=`), where browsers cannot set headers. It never appears in the
+HTML or tt7d's log (the e2e tests check the log). Until then the page shows
 a LOCKED badge and disables every action. A 401 on any action clears the
 token and locks the page again. Lock forgets it at once.
 
@@ -180,9 +332,10 @@ script or style, or `localStorage` show up.
 
 ```sh
 make tt7d            # build/tt7d: static ARM EABI5 for the panel
-make test-host       # unit tests (render, json, http, util, sysinfo, control, hardware, assets, mqtt) with ASan/UBSan
+make test-host       # unit tests (render, json, http, util, sysinfo, control, hardware, assets, mqtt, ws, input) with ASan/UBSan
 make test-e2e        # the real daemon, host-built, on a file-backed fb (tt7d/test_e2e.py)
 make test-mqtt       # the real daemon against real amqtt brokers and a paho client (tt7d/test_mqtt_e2e.py)
+make test-input      # input_event records through FIFOs; events out over the WebSocket and MQTT (tt7d/test_input_e2e.py)
 make check           # everything, including the boot image checks
 ```
 
@@ -304,7 +457,7 @@ Base: `<prefix>/<device id>`, e.g. `tt7/tt7-7f38a2`.
 | `event/boot` | no | `{"type":"boot","firmware_version":"0.1.0 (…)","uptime_s":41,"timestamp":"…"}`, once per daemon start, on the first connect |
 | `event/frame` | no | `{"type":"frame","frame_id":"…","sha256":"…","deduplicated":false,"timestamp":"…"}` for each accepted `PUT /frame` |
 | `event/error` | no | `{"type":"error","error":"command_disabled","command":"reboot","message":"…","timestamp":"…"}` |
-| `event/button` | no | M3 publishes physical button events with `mqtt_app_event(m, "button", json)`. Touch stays off MQTT (the owner chose a WebSocket for it) |
+| `event/button` | no | The same JSON as the WebSocket's button events (see "Input (M3)"), e.g. `{"type":"button","button":"power","action":"press","code":116,…}`. Touch stays off MQTT (the owner chose a WebSocket for it) |
 | `cmd/brightness` | (in) | `NN%` (0-100), or a raw level `NN` (0 to `max_brightness`, which is 255 here), written as is |
 | `cmd/wake`, `cmd/blank` | (in) | anything; the same backlight actions as `POST /display/wake` and `/display/blank` |
 | `cmd/reboot` | (in) | anything; refused with `command_disabled` unless `allow_reboot_cmd=true`, else runs `--reboot-cmd` as `POST /system/reboot` does |
@@ -369,8 +522,9 @@ classes on `/integrations/binary_sensor/` and `/integrations/button/`.
 ## On the panel
 
 `probe/tt7-app.sh` (the image's `/usr/bin/tt7-app`) runs discovery once per
-boot, starts `tt7probe log` for raw input logging (M3 will replace it), starts
-Wi-Fi, and then runs `tt7d --data-dir /data/tt7/tt7d` in a loop. If tt7d exits,
+boot, starts `tt7probe log` for raw input logging (evdev allows several readers,
+so it runs beside tt7d's own input handling and keeps the raw records to
+compare tt7d's events against), starts Wi-Fi, and then runs `tt7d --data-dir /data/tt7/tt7d` in a loop. If tt7d exits,
 it restarts after 2 s without re-running the steps before it. `/data/tt7/bin`
 comes first on its PATH, so a binary copied there replaces the image's copy.
 
@@ -433,6 +587,18 @@ curl -s http://<panel-ip>/api/v1/state | python3 -m json.tool | grep -A10 '"mqtt
 ```
 
 ## Unverified
+
+- All of "Input (M3)" on the real panel. It has run only on the host,
+  against FIFOs carrying records the test wrote. No event sequence recorded
+  on the panel was replayed: the touch unit tests use sequences written from
+  the kernel's multi-touch-protocol documentation and gslX680's advertised
+  capabilities. Open: whether gslX680 speaks protocol B as documented, the
+  touch axes against the fb (see "First run" above), which key code is
+  which button, and whether KEY_WAKEUP (143) is a real button.
+- The event stream in a browser: one headless Chromium session through
+  agent-browser, against the host build, showed the live list and the dot.
+  Safari and Firefox are untried. The CSP's `default-src 'self'` has to
+  allow the same-origin `ws:` URL, which current browsers do (CSP Level 3).
 
 - The rotation default (90), until someone photographs the test frame on the dock.
 - Colours on the real glass. The driver reports RGB565 R11/G5/B0 and tt7d

@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- ABOUTME: tt7d's local control panel (SPEC 29-31): overview, display, hardware, system, logs, actions. -->
+<!-- ABOUTME: tt7d's local control panel (SPEC 29-31): overview, display, input, hardware, system, logs, actions. -->
 <!-- ABOUTME: Compiled into tt7d; the CSP allows only /panel.css and /panel.js, so nothing here is inline. -->
 <html lang="en">
 <head>
@@ -19,6 +19,7 @@
   <nav>
     <a href="#overview">Overview</a>
     <a href="#display">Display</a>
+    <a href="#input">Input</a>
     <a href="#hardware">Hardware</a>
     <a href="#system">System</a>
     <a href="#logs">Logs</a>
@@ -45,7 +46,10 @@
   <h2>Overview</h2>
   <div class="split">
     <figure class="preview">
-      <img id="preview-overview" class="preview-img" alt="The frame on the panel's screen" hidden>
+      <div class="preview-box">
+        <img id="preview-overview" class="preview-img" alt="The frame on the panel's screen" hidden>
+        <span class="touch-dot" hidden></span>
+      </div>
       <figcaption class="preview-cap muted">No frame yet</figcaption>
     </figure>
     <dl id="overview-list" class="kv"></dl>
@@ -56,7 +60,10 @@
   <h2>Display</h2>
   <div class="split">
     <figure class="preview">
-      <img id="preview-display" class="preview-img" alt="The frame on the panel's screen" hidden>
+      <div class="preview-box">
+        <img id="preview-display" class="preview-img" alt="The frame on the panel's screen" hidden>
+        <span class="touch-dot" hidden></span>
+      </div>
       <figcaption class="preview-cap muted">No frame yet</figcaption>
     </figure>
     <div>
@@ -71,6 +78,12 @@
       <p id="display-msg" class="msg" role="status"></p>
     </div>
   </div>
+</section>
+
+<section id="input" class="card">
+  <h2>Input <span id="input-state" class="badge">locked</span></h2>
+  <p id="input-msg" class="msg muted">Unlock to watch touches and button presses live. A dot on the preview shows where the screen is touched.</p>
+  <ol id="input-log" class="log input-log"></ol>
 </section>
 
 <section id="hardware" class="card">

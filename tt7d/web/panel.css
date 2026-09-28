@@ -130,3 +130,17 @@ input[type="range"] { width: 100%; padding: 0; margin: 4px 0 12px; }
 .tree summary { cursor: pointer; font-weight: 600; }
 .tree .item { border-left: 2px solid var(--line); padding-left: 10px; margin: 6px 0; }
 .tree .null { color: var(--muted); font-style: italic; }
+/* Input: the live event list and the touch dot over the preview (placed by panel.js in percent). */
+.input-log { list-style: none; min-height: 3em; max-height: 16em; }
+.preview-box { position: relative; }
+.touch-dot {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border-radius: 50%;
+  background: rgba(255, 0, 170, 0.55);
+  border: 2px solid #fff;
+  pointer-events: none;
+}
+.touch-dot.up { opacity: 0.35; }

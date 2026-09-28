@@ -28,13 +28,21 @@ struct server_handlers {
     /* Called with every reply to a request whose head parsed, including the
      * server's own errors (408, 411, 413): one place to count outcomes. */
     void (*on_reply)(void *ctx, const struct http_request *req, const struct response *resp);
-    /* Optional: one more descriptor in the same poll() (the MQTT client).
-     * poll_prepare fills *pfd (fd -1 for none) and may lower *wait_ms (-1 =
-     * no limit); poll_service gets its revents after every wakeup, timer
-     * or not. Neither may block. */
-    void (*poll_prepare)(void *ctx, struct pollfd *pfd, int64_t *wait_ms);
-    void (*poll_service)(void *ctx, short revents);
+    /* Optional: more descriptors in the same poll() (the MQTT client, input
+     * devices, WebSocket clients). poll_prepare fills up to `max` entries of
+     * pfd, returns how many, and may lower *wait_ms (-1 = no limit);
+     * poll_service gets those entries back with their revents after every
+     * wakeup, timer or not. Neither may block. */
+    int (*poll_prepare)(void *ctx, struct pollfd *pfd, int max, int64_t *wait_ms);
+    void (*poll_service)(void *ctx, const struct pollfd *pfd, int n);
+    /* Optional: called when a request is complete, before handle(). Return 1
+     * to take over the socket (a WebSocket upgrade): the server then forgets
+     * the connection without replying or closing it. Return 0 to go on. */
+    int (*take_over)(void *ctx, int fd, const struct http_request *req);
 };
+
+/* How many descriptors poll_prepare may add. */
+#define SERVER_MAX_EXTRA_FDS 32
 
 struct server_config {
     const char *listen;  /* "IPv4:PORT" */

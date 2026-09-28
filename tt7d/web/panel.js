@@ -1,5 +1,5 @@
 // ABOUTME: tt7d control panel logic: polls /api/v1/state every 2 s, renders every section with textContent,
-// ABOUTME: and sends mutations with the bearer token kept in sessionStorage (per tab; never in URLs or logs).
+// ABOUTME: sends mutations with the bearer token (sessionStorage, per tab), and shows live input events.
 "use strict";
 
 const TOKEN_KEY = "tt7d-token";
@@ -90,6 +90,8 @@ function renderLock(message) {
     $("log-kernel").textContent = "";
     $("log-path").textContent = "";
   }
+  if (unlocked) connectEvents();
+  else disconnectEvents();
 }
 
 function showMsg(id, text, isError) {
@@ -339,6 +341,82 @@ async function poll() {
   }
   renderOnline();
   setTimeout(poll, POLL_MS);
+}
+
+// ---- input events -------------------------------------------------------------
+
+const INPUT_LOG_MAX = 30;
+let eventSocket = null;
+let eventRetryMs = 1000;
+let eventRetryTimer = null;
+
+function setInputState(text, cls, message) {
+  const badge = $("input-state");
+  badge.textContent = text;
+  badge.className = "badge " + cls;
+  if (message !== undefined) $("input-msg").textContent = message;
+}
+
+// Browsers cannot put an Authorization header on a WebSocket, so this one
+// same-origin URL carries the token as ?token=. tt7d never logs query strings.
+function connectEvents() {
+  clearTimeout(eventRetryTimer);
+  const t = currentToken();
+  if (!t || eventSocket) return;
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${scheme}//${location.host}/api/v1/events?token=${encodeURIComponent(t)}`);
+  eventSocket = ws;
+  setInputState("connecting", "");
+  ws.addEventListener("message", (m) => {
+    let ev;
+    try { ev = JSON.parse(m.data); } catch (e) { return; }
+    eventRetryMs = 1000;
+    showEvent(ev);
+  });
+  ws.addEventListener("close", () => {
+    if (eventSocket !== ws) return; // disconnectEvents() closed it on purpose
+    eventSocket = null;
+    setInputState("offline", "offline", `Disconnected; retrying in ${Math.round(eventRetryMs / 1000)} s.`);
+    eventRetryTimer = setTimeout(connectEvents, eventRetryMs);
+    eventRetryMs = Math.min(eventRetryMs * 2, 30000);
+  });
+}
+
+function disconnectEvents() {
+  clearTimeout(eventRetryTimer);
+  const ws = eventSocket;
+  eventSocket = null;
+  if (ws) ws.close();
+  for (const dot of document.querySelectorAll(".touch-dot")) dot.hidden = true;
+  setInputState("locked", "locked", "Unlock to watch touches and button presses live. A dot on the preview shows where the screen is touched.");
+}
+
+function logEvent(text) {
+  const list = $("input-log");
+  list.prepend(el("li", text));
+  while (list.children.length > INPUT_LOG_MAX) list.lastChild.remove();
+}
+
+// One dot (the last touch) on every preview, placed in percent of the logical frame.
+function showDot(ev) {
+  for (const dot of document.querySelectorAll(".touch-dot")) {
+    dot.hidden = false;
+    dot.style.left = `${(ev.nx * 100).toFixed(2)}%`;
+    dot.style.top = `${(ev.ny * 100).toFixed(2)}%`;
+    dot.classList.toggle("up", ev.action === "up");
+  }
+}
+
+function showEvent(ev) {
+  const time = (ev.timestamp || "").slice(11, 23);
+  if (ev.type === "hello") {
+    setInputState("live", "online", `Live. ${ev.touch ? "Touch coordinates are" : "No touchscreen found; coordinates would be"} ${ev.width}×${ev.height} logical, rotation ${ev.rotation}°.`);
+  } else if (ev.type === "touch") {
+    showDot(ev);
+    logEvent(`${time} touch ${ev.action} #${ev.pointer} at (${ev.x}, ${ev.y}) on frame ${ev.frame_id || "none"}`);
+  } else if (ev.type === "button") {
+    logEvent(`${time} button ${ev.button} ${ev.action} (key code ${ev.code})`);
+  }
 }
 
 // ---- actions ------------------------------------------------------------------

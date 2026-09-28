@@ -19,6 +19,12 @@ void render_logical_size(uint32_t native_w, uint32_t native_h, int rotation, uin
 void render_map(int rotation, uint32_t logical_w, uint32_t logical_h, uint32_t x, uint32_t y, uint32_t *nx,
                 uint32_t *ny);
 
+/* The inverse: which logical pixel shows at native pixel (nx, ny) of a
+ * native_w x native_h framebuffer. Touch input uses it, so a touch maps back
+ * through the same code that drew the frame. */
+void render_unmap(int rotation, uint32_t native_w, uint32_t native_h, uint32_t nx, uint32_t ny, uint32_t *x,
+                  uint32_t *y);
+
 /* Draw a logical_w x logical_h RGBA8888 image (row-major, 4 bytes per pixel)
  * onto `dst`, rotated. The caller guarantees the logical size matches
  * render_logical_size(dst->width, dst->height, rotation). Alpha is ignored:
