@@ -193,3 +193,8 @@
 - chromedp already passes `--disable-dev-shm-usage` (DefaultExecAllocatorOptions), so /dev/shm size doesn't matter.
 - docker-host runs Watchtower; the service opts out with a label since its image is a local build.
 - From a worktree-isolated agent, `DOCKER_HOST=ssh://... docker ...` inline is refused by the Bash guard; put it in a scratchpad wrapper script, or run docker over `ssh docker-host bash -s < script`.
+- **tt7-server in production (2026-09-28):** Docker Compose on docker-host (192.168.200.8), `~/docker/tt7-server`. The config is `config/screens.toml` (the directory is bind-mounted, so URL writes survive). Tokens live in `config/tokens/{admin,tabletop,wall}.token` (600, uid 1000). The admin API is on the host's loopback: `ssh harper@192.168.200.8`, then `curl -H "Authorization: Bearer $(cat ~/docker/tt7-server/config/tokens/admin.token)" http://127.0.0.1:7788/api/screens`. The remote shell is fish, so wrap multi-statement commands in `bash -c`.
+- **HADashboard on docker-host (appdaemon container, :5050):**
+  - The skin comes from the URL (`?skin=tt7`), and `&recompile=1` forces a rebuild after widget changes.
+  - `media_player.active_media` is a MIRROR written by the active_media app (set_state), so service calls must target the real player (`media_player.kitchen`).
+  - HA's media proxy returns 404 for tracks with no art. The `media_or_photo` widget falls back to photos when the art fails to load.
