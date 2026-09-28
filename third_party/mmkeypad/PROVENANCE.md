@@ -107,8 +107,26 @@ Only `init/init.c` changed. Every other file here is byte-identical to upstream
      cannot make PID 1 fork in a tight loop.
    - Respawns are logged to the rate-limited USB log, not the boot log.
 
+9. **RNDIS transmit-stall remedy (after a second field reset, 19:15:57).**
+   After one reset, rndis0 kept 10.55.0.1 and stayed up, rx_packets kept
+   rising, tx_packets froze, and `ifconfig down/up` did not help. Re-enabling
+   the gadget (`android0/enable` 0, 1 s, 1, 2 s, re-apply the IP) did. On each
+   tick, `usb_stall_check` feeds rndis0's (else usb0's) counters to
+   `usb_stall_tick()` in `init/usb_stall.c`. That is our file, not upstream:
+   a pure function with host tests in `init/test_usb_stall.c`.
+   - On SUSPECT (rx arrived, tx flat) it sends one UDP broadcast out of the
+     interface, so a healthy link that simply got unanswerable multicast shows
+     tx by the next tick.
+   - On STALLED (tx flat for >= 2 ticks despite that, >= 2 packets received,
+     >= 30 s since the last remedy) it runs the sequence above.
+   - It logs the counters, gadget `state` and `functions`. It only acts when
+     `functions` contains rndis, and only ever writes `enable`.
+   - `state` is logged but not required: what it reads during a stall is
+     unknown, and rx still arriving already shows the host has the device
+     configured.
+
 Everything else, including network and Dropbear bring-up order, the USB
-RNDIS+ACM gadget setup, the NAND module insmod, the
+RNDIS+ACM gadget setup (init only writes `enable` afterwards, see 9), the NAND module insmod, the
 vendor module loads, the Wi-Fi driver pick and the respawn loop, is upstream's
 code unchanged.
 

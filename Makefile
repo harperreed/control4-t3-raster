@@ -45,9 +45,9 @@ $(B)/dropbear/dropbearmulti: config/dropbear-localoptions.h scripts/build-dropbe
 $(B)/wifi/wpa_supplicant: scripts/build-wpa.sh scripts/fetch-sources.sh
 	scripts/build-wpa.sh
 
-$(B)/init: third_party/mmkeypad/init/init.c
+$(B)/init: third_party/mmkeypad/init/init.c init/usb_stall.c init/usb_stall.h
 	@mkdir -p $(B)
-	$(CROSS_CC) -static -Os -Wall -Werror -o $@ $<
+	$(CROSS_CC) -static -Os -Wall -Werror -Iinit -o $@ third_party/mmkeypad/init/init.c init/usb_stall.c
 
 $(B)/tt7probe: probe/tt7probe.c probe/fbdraw.c probe/fbdraw.h $(FONT_DIR)/font8x8_basic.h
 	@mkdir -p $(B)
@@ -81,8 +81,13 @@ $(B)/host/test_fbdraw: probe/test_fbdraw.c probe/fbdraw.c probe/fbdraw.h $(FONT_
 	@mkdir -p $(B)/host
 	gcc $(HOST_CFLAGS) -Iprobe -I$(FONT_DIR) -o $@ probe/test_fbdraw.c probe/fbdraw.c
 
-test-host: $(B)/host/test_fbdraw
-	$<
+$(B)/host/test_usb_stall: init/test_usb_stall.c init/usb_stall.c init/usb_stall.h
+	@mkdir -p $(B)/host
+	gcc $(HOST_CFLAGS) -Iinit -o $@ init/test_usb_stall.c init/usb_stall.c
+
+test-host: $(B)/host/test_fbdraw $(B)/host/test_usb_stall
+	$(B)/host/test_fbdraw
+	$(B)/host/test_usb_stall
 
 SHELL_SCRIPTS := scripts/flash-boot.sh scripts/backup-flash.sh scripts/build-busybox.sh \
                  scripts/build-dropbear.sh scripts/fetch-sources.sh scripts/stage-rootfs.sh \

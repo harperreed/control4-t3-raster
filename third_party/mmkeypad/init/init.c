@@ -44,6 +44,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "usb_stall.h" /* TT7: init/usb_stall.{c,h}, pure and host-tested */
+
 /* TT7: /data is the stock Android userdata partition, which we keep. Every
  * file this init creates, renames or deletes there lives under TT7_DIR. */
 #define TT7_DIR "/data/tt7"
@@ -487,6 +489,92 @@ static pid_t usb_tick(void) {
         _exit(0);
     }
     return pid;
+}
+
+/* ── TT7: RNDIS transmit-stall remedy ─────────────────────────────────────────
+ * Seen on the TT7 after a gadget reset: rndis0 keeps 10.55.0.1 and stays up,
+ * rx_packets rises, tx_packets freezes, and ifconfig down/up does not help.
+ * What fixed it by hand: android0/enable 0, 1 s, enable 1, 2 s, re-apply the
+ * IP. usb_stall_tick() (init/usb_stall.c) decides when; this is the I/O. It
+ * only writes `enable`, never `functions` or any other gadget setting, and
+ * only when `functions` includes rndis. */
+#define USB_GADGET "/sys/class/android_usb/android0"
+static struct usb_stall usb_stall_state;
+
+static void read_line(const char *path, char *buf, size_t n) {
+    buf[0] = 0;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return;
+    ssize_t r = read(fd, buf, n - 1);
+    close(fd);
+    buf[r > 0 ? r : 0] = 0;
+    buf[strcspn(buf, "\n")] = 0;
+}
+
+static int read_counter(const char *ifn, const char *name, unsigned long long *v) {
+    char p[96], b[32];
+    snprintf(p, sizeof(p), "/sys/class/net/%s/statistics/%s", ifn, name);
+    read_line(p, b, sizeof(b));
+    return b[0] && sscanf(b, "%llu", v) == 1;
+}
+
+/* One UDP broadcast out of `ifn`: on a working link its completion bumps
+ * tx_packets by the next tick, which clears a SUSPECT verdict. */
+static void usb_probe_send(const char *ifn) {
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) return;
+    int on = 1;
+    setsockopt(s, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+    setsockopt(s, SOL_SOCKET, SO_BINDTODEVICE, ifn, strlen(ifn) + 1);
+    struct sockaddr_in to;
+    memset(&to, 0, sizeof(to));
+    to.sin_family = AF_INET;
+    to.sin_port = htons(9); /* discard */
+    to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    ssize_t w = sendto(s, "tt7-usb-probe", 13, 0, (struct sockaddr *)&to, sizeof(to));
+    (void)w;
+    close(s);
+}
+
+static void gadget_enable(const char *v) {
+    int fd = open(USB_GADGET "/enable", O_WRONLY);
+    if (fd >= 0) { ssize_t w = write(fd, v, 1); (void)w; close(fd); }
+}
+
+static void usb_stall_check(void) {
+    const char *ifn = access("/sys/class/net/rndis0", F_OK) == 0 ? "rndis0"
+                    : access("/sys/class/net/usb0", F_OK) == 0 ? "usb0" : NULL;
+    unsigned long long rx, tx;
+    if (!ifn || !read_counter(ifn, "rx_packets", &rx) || !read_counter(ifn, "tx_packets", &tx)) {
+        usb_stall_state.have_prev = 0; /* restart from a fresh baseline when it returns */
+        return;
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    enum usb_stall_verdict v = usb_stall_tick(&usb_stall_state, rx, tx, (long)now.tv_sec);
+    if (v == USB_LINK_SUSPECT) usb_probe_send(ifn);
+    if (v != USB_LINK_STALLED) return;
+
+    char fn[128], state[32], m[256];
+    read_line(USB_GADGET "/functions", fn, sizeof(fn));
+    read_line(USB_GADGET "/state", state, sizeof(state));
+    snprintf(m, sizeof(m), "%s tx stalled: rx %llu (+%llu over %d ticks), tx frozen at %llu, "
+             "gadget state '%s', functions '%s'", ifn, rx, usb_stall_state.last_rx,
+             usb_stall_state.last_ticks, tx, state, fn);
+    usb_log(m);
+    if (!strstr(fn, "rndis")) {
+        usb_log("gadget functions are not rndis-based: leaving the gadget alone");
+        return;
+    }
+    gadget_enable("0");
+    sleep(1);
+    gadget_enable("1");
+    sleep(2);
+    char *up[] = {"/bin/busybox", "ifconfig", (char *)ifn, USB_IP, "netmask", "255.255.255.0", "up", NULL};
+    run(up);
+    read_line(USB_GADGET "/state", state, sizeof(state));
+    snprintf(m, sizeof(m), "re-enabled android_usb and re-applied " USB_IP " to %s; gadget state now '%s'", ifn, state);
+    usb_log(m);
 }
 
 static void bring_up_network(void) {
@@ -1080,6 +1168,7 @@ int main(int argc, char **argv) {
             serial_pid = spawn_serial_console();
         } else if (died == usb_tick_pid) {
             usb_link_check();
+            usb_stall_check();
             /* No shell running (ttyGS0 was absent last time): try again once
              * the ACM port exists, without logging "absent" every tick. */
             if (serial_pid <= 0 && access("/sys/class/tty/ttyGS0/dev", F_OK) == 0) {
