@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "flatconf.h"
+
 enum kind { BOOL, INT, STR };
 
 static const struct field {
@@ -125,44 +127,12 @@ int mqtt_config_set(struct mqtt_config *c, const char *key, const char *value, c
     return set_field(c, f, value, err, errlen);
 }
 
-static char *trim(char *s) {
-    while (*s == ' ' || *s == '\t') s++;
-    size_t n = strlen(s);
-    while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == '\r')) s[--n] = 0;
-    return s;
+static int set_line(void *ctx, const char *key, const char *value, char *err, size_t errlen) {
+    return mqtt_config_set(ctx, key, value, err, errlen);
 }
 
 int mqtt_config_parse(struct mqtt_config *c, const char *text, char *err, size_t errlen) {
-    char *copy = strdup(text);
-    if (!copy) {
-        snprintf(err, errlen, "out of memory");
-        return -1;
-    }
-    int lineno = 0, rc = 0;
-    char *save = NULL;
-    /* strtok_r would skip blank lines and so miscount; walk by hand. */
-    for (char *line = copy; line && rc == 0; line = save) {
-        lineno++;
-        char *nl = strchr(line, '\n');
-        save = nl ? nl + 1 : NULL;
-        if (nl) *nl = 0;
-        char *t = trim(line);
-        if (!*t || *t == '#') continue;
-        char *eq = strchr(t, '=');
-        char msg[160];
-        if (!eq) {
-            snprintf(err, errlen, "line %d: expected KEY=VALUE", lineno);
-            rc = -1;
-            break;
-        }
-        *eq = 0;
-        if (mqtt_config_set(c, trim(t), trim(eq + 1), msg, sizeof msg) < 0) {
-            snprintf(err, errlen, "line %d: %s", lineno, msg);
-            rc = -1;
-        }
-    }
-    free(copy);
-    return rc;
+    return flatconf_parse_lines(text, set_line, c, err, errlen);
 }
 
 void mqtt_config_format(const struct mqtt_config *c, struct sbuf *out) {
@@ -176,214 +146,78 @@ void mqtt_config_format(const struct mqtt_config *c, struct sbuf *out) {
     }
 }
 
-/* ---- a flat JSON object parser --------------------------------------------- */
+static const char *kind_word(enum kind k) { return k == BOOL ? "a JSON boolean" : k == INT ? "a whole JSON number" : "a JSON string"; }
 
-enum jtype { J_STR, J_INT, J_BOOL, J_NULL, J_OTHER };
-
-struct jparser {
-    const char *p, *end;
+struct apply_ctx {
+    struct mqtt_config next;
+    unsigned locked;
+    char *password;
+    size_t password_size;
+    int *password_change;
+    char *err;
+    size_t errlen;
+    char *last_key; /* [32]: the member being applied */
 };
 
-static void skip_ws(struct jparser *j) {
-    while (j->p < j->end && (*j->p == ' ' || *j->p == '\t' || *j->p == '\n' || *j->p == '\r')) j->p++;
-}
+#define APPLY_INVALID 1
+#define APPLY_LOCKED 2
 
-static int hexval(char ch) {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-    return -1;
-}
-
-/* A JSON string into out (UTF-8, NUL-terminated). Returns 0, -1 if malformed
- * or too long for out. A \u0000 escape sets *has_nul. */
-static int parse_string(struct jparser *j, char *out, size_t size, int *has_nul) {
-    if (j->p >= j->end || *j->p != '"') return -1;
-    j->p++;
-    size_t n = 0;
-    while (j->p < j->end && *j->p != '"') {
-        unsigned cp = (unsigned char)*j->p++;
-        int raw = 1; /* a byte as it came: UTF-8 in the body passes through */
-        if (cp < 0x20) return -1;
-        if (cp == '\\') {
-            if (j->p >= j->end) return -1;
-            char e = *j->p++;
-            raw = 0;
-            switch (e) {
-            case '"': case '\\': case '/': cp = (unsigned char)e; break;
-            case 'b': cp = '\b'; break;
-            case 'f': cp = '\f'; break;
-            case 'n': cp = '\n'; break;
-            case 'r': cp = '\r'; break;
-            case 't': cp = '\t'; break;
-            case 'u': {
-                if (j->end - j->p < 4) return -1;
-                cp = 0;
-                for (int i = 0; i < 4; i++) {
-                    int h = hexval(j->p[i]);
-                    if (h < 0) return -1;
-                    cp = cp << 4 | (unsigned)h;
-                }
-                j->p += 4;
-                if (cp >= 0xd800 && cp <= 0xdfff) return -1; /* no surrogate pairs needed here */
-                if (cp == 0) *has_nul = 1;
-                break;
-            }
-            default: return -1;
-            }
+static int apply_member(void *vctx, const char *key, enum jtype type, const char *value, int nul) {
+    struct apply_ctx *a = vctx;
+    snprintf(a->last_key, 32, "%s", key);
+    if (!strcmp(key, "password")) {
+        if (type == J_NULL) value = "";
+        else if (type != J_STR || nul || !mqtt_password_valid(value)) {
+            snprintf(a->err, a->errlen, "password must be a string of at most 255 bytes without NUL, CR or LF, or null");
+            return APPLY_INVALID;
         }
-        char buf[3];
-        size_t len = 1;
-        if (raw || cp < 0x80) buf[0] = (char)cp;
-        else if (cp < 0x800) {
-            buf[0] = (char)(0xc0 | cp >> 6);
-            buf[1] = (char)(0x80 | (cp & 0x3f));
-            len = 2;
-        } else {
-            buf[0] = (char)(0xe0 | cp >> 12);
-            buf[1] = (char)(0x80 | (cp >> 6 & 0x3f));
-            buf[2] = (char)(0x80 | (cp & 0x3f));
-            len = 3;
-        }
-        if (n + len >= size) return -1;
-        memcpy(out + n, buf, len);
-        n += len;
+        snprintf(a->password, a->password_size, "%s", value);
+        *a->password_change = 1;
+        return 0;
     }
-    if (j->p >= j->end) return -1;
-    j->p++;
-    out[n] = 0;
-    return 0;
+    int f = mqtt_field_by_name(key);
+    if (f < 0) {
+        snprintf(a->err, a->errlen, "unknown setting '%s'", key);
+        return APPLY_INVALID;
+    }
+    if (f == MQF_PASSWORD_FILE) {
+        snprintf(a->err, a->errlen, "password_file can only be set in mqtt.conf or with --mqtt-password-file");
+        return APPLY_INVALID;
+    }
+    if (a->locked & (1u << f)) {
+        snprintf(a->err, a->errlen, "%s is set by a --mqtt-%s flag on the tt7d command line", key, key);
+        return APPLY_LOCKED;
+    }
+    if (f == MQF_CLIENT_ID && type == J_NULL) { /* null = back to the device id */
+        type = J_STR;
+        value = "";
+    }
+    enum jtype want = fields[f].kind == BOOL ? J_BOOL : fields[f].kind == INT ? J_INT : J_STR;
+    if (type != want || nul) {
+        snprintf(a->err, a->errlen, "%s must be %s", key, kind_word(fields[f].kind));
+        return APPLY_INVALID;
+    }
+    return set_field(&a->next, f, value, a->err, a->errlen) < 0 ? APPLY_INVALID : 0;
 }
-
-/* One value. Strings go to text; integers and booleans are written as text too. */
-static int parse_value(struct jparser *j, enum jtype *type, char *text, size_t size, int *has_nul) {
-    skip_ws(j);
-    if (j->p >= j->end) return -1;
-    if (*j->p == '"') {
-        *type = J_STR;
-        return parse_string(j, text, size, has_nul);
-    }
-    static const struct {
-        const char *word;
-        enum jtype type;
-    } words[] = {{"true", J_BOOL}, {"false", J_BOOL}, {"null", J_NULL}};
-    for (size_t i = 0; i < 3; i++) {
-        size_t n = strlen(words[i].word);
-        if ((size_t)(j->end - j->p) >= n && !strncmp(j->p, words[i].word, n)) {
-            j->p += n;
-            *type = words[i].type;
-            snprintf(text, size, "%s", words[i].word);
-            return 0;
-        }
-    }
-    /* A number: take the JSON number characters, then decide if it is an integer. */
-    const char *start = j->p;
-    while (j->p < j->end && strchr("-+0123456789.eE", *j->p)) j->p++;
-    size_t n = (size_t)(j->p - start);
-    if (n == 0) {
-        /* An object or array value: not a setting, but skip nothing; refuse. */
-        return -1;
-    }
-    if (n >= size) return -1;
-    memcpy(text, start, n);
-    text[n] = 0;
-    *type = strspn(text + (text[0] == '-'), "0123456789") == strlen(text + (text[0] == '-')) && n > (text[0] == '-')
-                ? J_INT
-                : J_OTHER;
-    return 0;
-}
-
-static const char *kind_word(enum kind k) { return k == BOOL ? "a JSON boolean" : k == INT ? "a whole JSON number" : "a JSON string"; }
 
 int mqtt_config_apply_json(struct mqtt_config *c, const char *body, size_t len, unsigned locked, char *password,
                            size_t password_size, int *password_change, char *bad_field, char *err, size_t errlen) {
-    struct mqtt_config next = *c;
-    struct jparser j = {body, body + len};
-    char key[32], value[300];
-    int rc = -1;
-    *password_change = 0;
-    bad_field[0] = 0;
-    password[0] = 0;
-
-    skip_ws(&j);
-    if (j.p >= j.end || *j.p != '{') goto syntax;
-    j.p++;
-    skip_ws(&j);
-    if (j.p < j.end && *j.p == '}') {
-        j.p++;
-        goto done;
-    }
-    for (;;) {
-        int nul = 0;
-        skip_ws(&j);
-        if (parse_string(&j, key, sizeof key, &nul) != 0 || nul) goto syntax;
-        skip_ws(&j);
-        if (j.p >= j.end || *j.p != ':') goto syntax;
-        j.p++;
-        enum jtype type;
-        if (parse_value(&j, &type, value, sizeof value, &nul) != 0) {
-            /* A syntax error inside a known member's value still names it. */
-            snprintf(bad_field, 32, "%s", key);
-            snprintf(err, errlen, "%s: malformed or too long value", key);
-            goto fail;
-        }
-        snprintf(bad_field, 32, "%s", key);
-        if (!strcmp(key, "password")) {
-            if (type == J_NULL) value[0] = 0;
-            else if (type != J_STR || nul || !mqtt_password_valid(value)) {
-                snprintf(err, errlen, "password must be a string of at most 255 bytes without NUL, CR or LF, or null");
-                goto fail;
-            }
-            snprintf(password, password_size, "%s", value);
-            *password_change = 1;
-        } else {
-            int f = mqtt_field_by_name(key);
-            if (f < 0) {
-                snprintf(err, errlen, "unknown setting '%s'", key);
-                goto fail;
-            }
-            if (f == MQF_PASSWORD_FILE) {
-                snprintf(err, errlen, "password_file can only be set in mqtt.conf or with --mqtt-password-file");
-                goto fail;
-            }
-            if (locked & (1u << f)) {
-                snprintf(err, errlen, "%s is set by a --mqtt-%s flag on the tt7d command line", key, key);
-                rc = -2;
-                goto fail;
-            }
-            if (f == MQF_CLIENT_ID && type == J_NULL) { /* null = back to the device id */
-                type = J_STR;
-                value[0] = 0;
-            }
-            enum jtype want = fields[f].kind == BOOL ? J_BOOL : fields[f].kind == INT ? J_INT : J_STR;
-            if (type != want || nul) {
-                snprintf(err, errlen, "%s must be %s", key, kind_word(fields[f].kind));
-                goto fail;
-            }
-            if (set_field(&next, f, value, err, errlen) < 0) goto fail;
-        }
-        bad_field[0] = 0;
-        skip_ws(&j);
-        if (j.p < j.end && *j.p == ',') {
-            j.p++;
-            continue;
-        }
-        if (j.p < j.end && *j.p == '}') {
-            j.p++;
-            break;
-        }
-        goto syntax;
-    }
-done:
-    skip_ws(&j);
-    if (j.p != j.end) goto syntax;
-    *c = next;
-    return 0;
-syntax:
-    bad_field[0] = 0;
-    snprintf(err, errlen, "the body must be one flat JSON object of settings");
-fail:
+    struct apply_ctx a = {*c, locked, password, password_size, password_change, err, errlen, NULL};
     *password_change = 0;
     password[0] = 0;
-    return rc;
+    /* flatjson_each names the member of a malformed value in bad_field; a
+     * refused value is named here, from the key being applied. */
+    char last_key[32] = "";
+    a.last_key = last_key;
+    int rc = flatjson_each(body, len, apply_member, &a, bad_field, 32);
+    if (rc != 0 && rc != FLATJSON_SYNTAX) snprintf(bad_field, 32, "%s", last_key);
+    if (rc == 0) {
+        *c = a.next;
+        return 0;
+    }
+    if (rc == FLATJSON_SYNTAX && bad_field[0]) snprintf(err, errlen, "%s: malformed or too long value", bad_field);
+    else if (rc == FLATJSON_SYNTAX) snprintf(err, errlen, "the body must be one flat JSON object of settings");
+    *password_change = 0;
+    password[0] = 0;
+    return rc == APPLY_LOCKED ? -2 : -1;
 }

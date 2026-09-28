@@ -29,7 +29,7 @@ HOST_CFLAGS  := -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefin
 # tt7d: the network display daemon. Modules shared by the daemon and its unit tests.
 # TT7D_ASSETS_C embeds the control panel (tt7d/web/) and the test pattern; see its rule below.
 TT7D_ASSETS_C := $(B)/gen/tt7d_assets.c
-TT7D_LIB     := tt7d/json.c tt7d/http.c tt7d/render.c tt7d/sha256.c tt7d/ident.c tt7d/sysinfo.c probe/fbdraw.c \
+TT7D_LIB     := tt7d/json.c tt7d/flatconf.c tt7d/http.c tt7d/render.c tt7d/sha256.c tt7d/ident.c tt7d/sysinfo.c probe/fbdraw.c \
                 tt7d/control.c tt7d/hardware.c tt7d/assets.c $(TT7D_ASSETS_C) \
                 tt7d/server.c tt7d/mqtt_packet.c tt7d/mqtt_config.c tt7d/mqtt_client.c tt7d/mqtt.c \
                 tt7d/sha1.c tt7d/ws.c tt7d/touch.c tt7d/input.c \
