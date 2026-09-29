@@ -14,6 +14,10 @@ services:
     restart: unless-stopped
     # Docker's init (tini) as PID 1: reaps Chrome's exited helper processes and forwards SIGTERM.
     init: true
+    # Pages render with this time zone (clocks on dashboards run in the server's Chrome, not on the panel).
+    # The image has tzdata; set TT7_TZ (e.g. in .env) to any zone name. Default: America/Chicago.
+    environment:
+      TZ: ${TT7_TZ:-America/Chicago}
     ports:
       # The admin page and API. Loopback only; change the host side to reach it from the LAN.
       - "127.0.0.1:${TT7_ADMIN_PORT:-7788}:7788"

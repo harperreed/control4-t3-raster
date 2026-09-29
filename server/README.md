@@ -411,3 +411,6 @@ make server-check   # go vet, go test (units), then server/test_server_e2e.py
   (`unreachableUrl`), which only unit tests exercise. A page that turns
   itself into an HTTP error page that way is not caught: only our own loads
   see the status code.
+
+### Time zone
+Dashboards that show a clock render it in the server's Chrome, so the container's time zone is what the panel shows. `compose.yaml` sets `TZ` from `TT7_TZ` (default `America/Chicago`). Put `TT7_TZ=Europe/Berlin` (or similar) in a `.env` next to `compose.yaml` to change it, then `docker compose up -d`.

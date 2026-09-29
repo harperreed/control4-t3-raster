@@ -198,3 +198,4 @@
   - The skin comes from the URL (`?skin=tt7`), and `&recompile=1` forces a rebuild after widget changes.
   - `media_player.active_media` is a MIRROR written by the active_media app (set_state), so service calls must target the real player (`media_player.kitchen`).
   - HA's media proxy returns 404 for tracks with no art. The `media_or_photo` widget falls back to photos when the art fails to load.
+- **Clocks rendered in tt7-server's Chrome use the CONTAINER's time zone.** The Docker container defaulted to UTC, so the wall showed 1:30 AM instead of 8:30 PM. compose.yaml now sets `TZ=${TT7_TZ:-America/Chicago}`.
