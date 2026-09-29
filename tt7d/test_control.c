@@ -38,13 +38,17 @@ static void test_brightness_parse(void) {
 }
 
 static void test_brightness_to_raw(void) {
-    CHECK(brightness_to_raw(0, 0, 255) == 0, "raw 0");
+    /* 0 never reaches the backlight: rk28_bl treats brightness 0 as "full
+     * bright", so a requested 0 becomes 1, the dimmest level. Blank turns it off. */
+    CHECK(brightness_to_raw(0, 0, 255) == 1, "raw 0 clamps to 1, got %ld", brightness_to_raw(0, 0, 255));
+    CHECK(brightness_to_raw(1, 0, 255) == 1, "raw 1");
     CHECK(brightness_to_raw(255, 0, 255) == 255, "raw max");
     CHECK(brightness_to_raw(256, 0, 255) == -1, "raw above max");
     CHECK(brightness_to_raw(-1, 0, 255) == -1, "raw below 0");
     CHECK(brightness_to_raw(100, 1, 255) == 255, "100 percent = max");
     CHECK(brightness_to_raw(50, 1, 255) == 128, "50 percent of 255 rounds to 128, got %ld", brightness_to_raw(50, 1, 255));
-    CHECK(brightness_to_raw(0, 1, 255) == 0, "0 percent");
+    CHECK(brightness_to_raw(0, 1, 255) == 1, "0 percent clamps to 1, got %ld", brightness_to_raw(0, 1, 255));
+    CHECK(brightness_to_raw(1, 1, 255) == 3, "1 percent of 255 rounds to 3");
     CHECK(brightness_to_raw(101, 1, 255) == -1, "above 100 percent");
     CHECK(brightness_to_raw(-1, 1, 255) == -1, "below 0 percent");
     CHECK(brightness_to_raw(10, 0, 0) == -1 && brightness_to_raw(10, 0, -1) == -1, "unknown max refuses all");

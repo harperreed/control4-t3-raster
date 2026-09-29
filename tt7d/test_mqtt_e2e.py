@@ -315,8 +315,8 @@ def test_frames_and_commands(d, obs, base):
 CHANGE_WINDOW_S = 1.5
 
 
-def backlight(d):
-    with open(os.path.join(d.backlight, "brightness")) as f:
+def backlight(d, attr="brightness"):
+    with open(os.path.join(d.backlight, attr)) as f:
         return int(f.read().strip())
 
 
@@ -350,13 +350,27 @@ def test_display_commands(d, obs, base):
     assert status == 200, body
     state_where(lambda s: s["display_on"] is True and s["brightness"] == 30)
 
-    # cmd/blank then cmd/wake round-trips to the level before the blank.
+    # cmd/blank powers the backlight down with bl_power (never brightness 0,
+    # which is bright on rk28_bl); cmd/wake powers it back up at the level.
     command("blank", "PRESS")
-    wait_for("cmd/blank on the backlight", lambda: backlight(d) == 0, timeout=5)
-    state_where(lambda s: s["display_on"] is False)
+    wait_for("cmd/blank on bl_power", lambda: backlight(d, "bl_power") == 4, timeout=5)
+    assert backlight(d) == 77, backlight(d)
+    state_where(lambda s: s["display_on"] is False and s["brightness"] == 30)
+    # A brightness while blank is stored for wake and keeps the screen dark.
+    command("brightness", "50%")
+    state_where(lambda s: s["display_on"] is False and s["brightness"] == 50)
+    assert backlight(d, "bl_power") == 4 and backlight(d) == 77, (backlight(d, "bl_power"), backlight(d))
     command("wake", "PRESS")
-    wait_for("cmd/wake on the backlight", lambda: backlight(d) == 77, timeout=5)
-    state_where(lambda s: s["display_on"] is True and s["brightness"] == 30)
+    wait_for("cmd/wake on bl_power", lambda: backlight(d, "bl_power") == 0, timeout=5)
+    assert backlight(d) == 128, backlight(d)
+    state_where(lambda s: s["display_on"] is True and s["brightness"] == 50)
+    # cmd/brightness 0 (raw or percent) becomes 1, never 0.
+    command("brightness", "0")
+    wait_for("cmd/brightness 0 becomes 1", lambda: backlight(d) == 1, timeout=5)
+    command("brightness", "30%")
+    wait_for("cmd/brightness 30%", lambda: backlight(d) == 77, timeout=5)
+    command("brightness", "0%")
+    wait_for("cmd/brightness 0% becomes 1", lambda: backlight(d) == 1, timeout=5)
     errors = [m for m in obs.drain() if m[0] == f"{base}/event/error"]
     assert not errors, errors
 

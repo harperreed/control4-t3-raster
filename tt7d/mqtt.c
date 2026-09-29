@@ -214,6 +214,7 @@ static void maybe_publish_state(struct mqtt_app *m, int force) {
     int64_t now = mqtt_now_ms();
     struct sysinfo_values v;
     sysinfo_read(m->sysfs_root, &v);
+    if (m->actions.display) m->actions.display(m->actions.ctx, &v.display_on, &v.brightness_percent);
     struct sbuf doc, sig;
     sb_init(&doc);
     sb_init(&sig);

@@ -34,7 +34,7 @@ TT7D_LIB     := tt7d/json.c tt7d/flatconf.c tt7d/http.c tt7d/render.c tt7d/sha25
                 tt7d/server.c tt7d/mqtt_packet.c tt7d/mqtt_config.c tt7d/mqtt_client.c tt7d/mqtt.c \
                 tt7d/sha1.c tt7d/ws.c tt7d/touch.c tt7d/input.c \
                 tt7d/fallback.c tt7d/timesync.c tt7d/font.c tt7d/clockface.c \
-                tt7d/camera_config.c tt7d/camera_proto.c tt7d/presence.c tt7d/bundle.c tt7d/sign.c
+                tt7d/camera_config.c tt7d/camera_proto.c tt7d/presence.c tt7d/bundle.c tt7d/sign.c tt7d/backlight.c
 TT7D_SRCS    := $(TT7D_LIB) tt7d/display.c tt7d/frame.c tt7d/regions.c tt7d/panel.c tt7d/events.c tt7d/fallback_screen.c \
                 tt7d/update.c tt7d/main.c \
                 tt7d/camera.c tt7d/camera_worker.c cam/capture.c cam/yuv.c cam/sentinel.c cam/motion.c cam/jpeg.c
@@ -50,7 +50,7 @@ LODEPNG_DEFS := -DLODEPNG_NO_COMPILE_DISK -DLODEPNG_NO_COMPILE_CPP \
                 -DLODEPNG_NO_COMPILE_ANCILLARY_CHUNKS
 TT7D_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
 TT7D_UNITS   := render json http util sysinfo control hardware assets mqtt ws input fallback timesync clockface camera \
-                bundle regions
+                bundle regions backlight
 
 # cam: camera capture tool for the panel (cam/). A separate static binary, not
 # part of the boot image: copy build/tt7cam to the panel and run it there.

@@ -28,6 +28,10 @@ struct mqtt_actions {
     int (*wake)(void *ctx);
     int (*blank)(void *ctx);
     int (*reboot)(void *ctx);
+    /* The display's on (1/0/-1) and brightness percent for state, in place of
+     * the raw sysfs reading: while blank the brightness is the level wake
+     * will restore (backlight.h). NULL keeps the sysfs reading. */
+    void (*display)(void *ctx, int *on, int *percent);
 };
 
 struct mqtt_app;

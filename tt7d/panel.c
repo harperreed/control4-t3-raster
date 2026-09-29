@@ -75,34 +75,14 @@ int panel_check_head(struct panel *p, const struct http_request *req, struct res
 
 /* ---- backlight --------------------------------------------------------------- */
 
-/* The first backlight's name, or "" if there is none (tt7d uses only that one). */
-static void backlight_name(const struct panel *p, char *out) {
-    struct names bl;
-    list_dir(p->sysfs_root, "class/backlight", &bl);
-    snprintf(out, NAME_LEN, "%s", bl.n ? bl.v[0] : "");
-}
-
-static int backlight_write(const struct panel *p, const char *name, const char *attr, long value) {
-    char path[512];
-    snprintf(path, sizeof path, "%s/class/backlight/%s/%s", p->sysfs_root, name, attr);
-    FILE *f = fopen(path, "w");
-    if (!f) return -1;
-    int ok = fprintf(f, "%ld\n", value) > 0;
-    return fclose(f) == 0 && ok ? 0 : -1;
-}
-
-void panel_init(struct panel *p) {
-    char bl[NAME_LEN];
-    backlight_name(p, bl);
-    long level = bl[0] ? read_long(p->sysfs_root, "class/backlight", bl, "brightness", -1) : -1;
-    p->wake_level = level > 0 ? level : -1;
-}
+void panel_init(struct panel *p) { backlight_init(&p->bl, p->sysfs_root); }
 
 /* The display power state after an action: what /state reports, plus the
  * raw levels the action worked with. */
-static void display_state(const struct panel *p, const char *bl, struct response *resp) {
+static void display_state(const struct panel *p, struct response *resp) {
+    const char *bl = p->bl.name;
     int on, pct;
-    sysinfo_backlight(p->sysfs_root, &on, &pct);
+    backlight_state(&p->bl, &on, &pct);
     long raw = read_long(p->sysfs_root, "class/backlight", bl, "brightness", -1);
     long max = read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
     struct sbuf *sb = &resp->body;
@@ -117,23 +97,23 @@ static void display_state(const struct panel *p, const char *bl, struct response
     if (max >= 0) sb_printf(sb, "%ld", max);
     else sb_puts(sb, "null");
     sb_puts(sb, ",\"wake_brightness_raw\":");
-    if (p->wake_level > 0) sb_printf(sb, "%ld", p->wake_level);
+    if (p->bl.level > 0) sb_printf(sb, "%ld", p->bl.level);
     else sb_puts(sb, "null");
-    sb_puts(sb, ",\"blank_method\":\"backlight\"}");
+    sb_puts(sb, ",\"blank_method\":");
+    sb_json_str(sb, backlight_blank_method(&p->bl));
+    sb_puts(sb, "}");
 }
 
 /* The HTTP answer for a panel_* action result. */
 static void action_reply(struct panel *p, int rc, struct response *resp) {
     int saved = errno;
-    char bl[NAME_LEN];
-    backlight_name(p, bl);
     switch (rc) {
-    case PANEL_OK: display_state(p, bl, resp); break;
+    case PANEL_OK: display_state(p, resp); break;
     case PANEL_NO_BACKLIGHT: resp_error(resp, 503, "no_backlight", "no backlight device in sysfs"); break;
     default: /* PANEL_WRITE_FAILED */
         resp_error_begin(resp, 500, "backlight_write_failed", "could not write the backlight's sysfs file");
         sb_puts(&resp->body, ",\"device\":");
-        sb_json_str(&resp->body, bl);
+        sb_json_str(&resp->body, p->bl.name);
         sb_puts(&resp->body, ",\"detail\":");
         sb_json_str(&resp->body, strerror(saved));
         resp_error_end(resp);
@@ -141,15 +121,11 @@ static void action_reply(struct panel *p, int rc, struct response *resp) {
 }
 
 int panel_set_brightness(struct panel *p, long value, int percent) {
-    char bl[NAME_LEN];
-    backlight_name(p, bl);
-    if (!bl[0]) return PANEL_NO_BACKLIGHT;
-    long max = read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
+    if (!p->bl.name[0]) return PANEL_NO_BACKLIGHT;
+    long max = read_long(p->sysfs_root, "class/backlight", p->bl.name, "max_brightness", -1);
     long raw = brightness_to_raw(value, percent, max);
     if (raw < 0) return PANEL_OUT_OF_RANGE;
-    if (backlight_write(p, bl, "brightness", raw) != 0) return PANEL_WRITE_FAILED;
-    if (raw > 0) p->wake_level = raw;
-    return PANEL_OK;
+    return backlight_set(&p->bl, raw) == 0 ? PANEL_OK : PANEL_WRITE_FAILED;
 }
 
 static void set_brightness(struct panel *p, const uint8_t *body, size_t len, struct response *resp) {
@@ -162,9 +138,7 @@ static void set_brightness(struct panel *p, const uint8_t *body, size_t len, str
     }
     int rc = panel_set_brightness(p, value, percent);
     if (rc == PANEL_OUT_OF_RANGE) {
-        char bl[NAME_LEN];
-        backlight_name(p, bl);
-        long max = read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
+        long max = read_long(p->sysfs_root, "class/backlight", p->bl.name, "max_brightness", -1);
         resp_error_begin(resp, 400, "brightness_out_of_range", "the value is outside the allowed range");
         sb_printf(&resp->body, ",\"unit\":\"%s\",\"min\":0,\"max\":", percent ? "percent" : "raw");
         if (percent || max > 0) sb_printf(&resp->body, "%ld", percent ? 100L : max);
@@ -175,33 +149,17 @@ static void set_brightness(struct panel *p, const uint8_t *body, size_t len, str
     action_reply(p, rc, resp);
 }
 
-/* Blank = backlight level 0, keeping the old level for wake. The fb blank
- * ioctl is not used: on this Rockchip 3.0 kernel it is unverified what it
- * powers down and whether unblank brings the LCD controller back. */
+/* Blank and wake are backlight.c's. The fb blank ioctl is not used: on this
+ * Rockchip 3.0 kernel it is unverified what it powers down and whether
+ * unblank brings the LCD controller back. */
 int panel_blank(struct panel *p) {
-    char bl[NAME_LEN];
-    backlight_name(p, bl);
-    if (!bl[0]) return PANEL_NO_BACKLIGHT;
-    long cur = read_long(p->sysfs_root, "class/backlight", bl, "brightness", -1);
-    if (cur > 0) p->wake_level = cur;
-    if (cur != 0 && backlight_write(p, bl, "brightness", 0) != 0) return PANEL_WRITE_FAILED;
-    return PANEL_OK;
+    if (!p->bl.name[0]) return PANEL_NO_BACKLIGHT;
+    return backlight_blank(&p->bl) == 0 ? PANEL_OK : PANEL_WRITE_FAILED;
 }
 
-/* Wake = bl_power back to 0 (on) if something set it, and the remembered
- * level if the backlight is at 0. Without a remembered level (tt7d started
- * while blank), max_brightness, as tt7-app does at boot. */
 int panel_wake(struct panel *p) {
-    char bl[NAME_LEN];
-    backlight_name(p, bl);
-    if (!bl[0]) return PANEL_NO_BACKLIGHT;
-    if (read_long(p->sysfs_root, "class/backlight", bl, "bl_power", 0) != 0 &&
-        backlight_write(p, bl, "bl_power", 0) != 0)
-        return PANEL_WRITE_FAILED;
-    long cur = read_long(p->sysfs_root, "class/backlight", bl, "brightness", -1);
-    long level = p->wake_level > 0 ? p->wake_level : read_long(p->sysfs_root, "class/backlight", bl, "max_brightness", -1);
-    if (cur == 0 && level > 0 && backlight_write(p, bl, "brightness", level) != 0) return PANEL_WRITE_FAILED;
-    return PANEL_OK;
+    if (!p->bl.name[0]) return PANEL_NO_BACKLIGHT;
+    return backlight_wake(&p->bl) == 0 ? PANEL_OK : PANEL_WRITE_FAILED;
 }
 
 /* ---- test pattern -------------------------------------------------------------- */
@@ -408,9 +366,9 @@ static void hardware_json(struct panel *p, struct sbuf *sb) {
     sb_json_str(sb, d->device);
     sb_printf(sb,
               ",\"native\":{\"width\":%u,\"height\":%u,\"format\":\"%s\",\"stride\":%u,\"bits_per_pixel\":%u},"
-              "\"rotation\":%d,\"logical\":{\"width\":%u,\"height\":%u},\"blank_method\":\"backlight\"},",
+              "\"rotation\":%d,\"logical\":{\"width\":%u,\"height\":%u},\"blank_method\":\"%s\"},",
               d->back.width, d->back.height, render_format_name(&d->back), d->back.stride, d->back.bpp, d->rotation,
-              d->logical_w, d->logical_h);
+              d->logical_w, d->logical_h, backlight_blank_method(&p->bl));
     hardware_members(sb, p->sysfs_root, p->proc_root);
     sb_puts(sb, "}");
 }

@@ -323,15 +323,17 @@ def test_presence(d, obs, base, device_id, feeder):
     ws = EventStream("127.0.0.1", d.port, d.token())
     assert json.loads(ws.next_message())["type"] == "hello"
     status, _, body = d.api("POST", "/api/v1/display/blank")
-    assert status == 200 and d.bl("brightness") == "0", body
+    assert status == 200 and d.bl("bl_power") == "4", body
     level = test_e2e.jbody(status, body, 200)["wake_brightness_raw"]
+    assert d.bl("brightness") == str(level), "blank changed brightness"
 
     mark = obs.mark()
     feeder.scene = "person"
     ev = messages_of(ws, "presence", 1, "presence on")[0]
     assert ev["present"] is True and ev["score"] >= 8 and "timestamp" in ev, ev
     obs.expect(f"{base}/presence", lambda p, r: p == b"ON", since=mark)
-    wait_for("presence woke the display", lambda: d.bl("brightness") == str(level))
+    wait_for("presence woke the display", lambda: d.bl("bl_power") == "0")
+    assert d.bl("brightness") == str(level), d.bl("brightness")
     assert d.camera()["present"] is True
 
     # A snapshot while presence streams shares the stream: same worker, no restart.
@@ -348,7 +350,7 @@ def test_presence(d, obs, base, device_id, feeder):
     assert ev["present"] is False, ev
     obs.expect(f"{base}/presence", lambda p, r: p == b"OFF", since=mark)
     left = time.monotonic()
-    wait_for("the idle blank", lambda: d.bl("brightness") == "0", timeout=10)
+    wait_for("the idle blank", lambda: d.bl("bl_power") == "4", timeout=10)
     assert time.monotonic() - left >= 0.8, "blanked before presence_idle_blank_s"
     ws.close()
 

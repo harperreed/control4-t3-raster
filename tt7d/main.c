@@ -276,7 +276,7 @@ static void state_json(struct app *a, struct sbuf *sb) {
               (long long)seconds_since(&a->started, CLOCK_MONOTONIC));
 
     int on, pct;
-    sysinfo_backlight(a->cfg.sysfs_root, &on, &pct);
+    backlight_state(&a->panel.bl, &on, &pct);
     sb_printf(sb, ",\"display\":{\"on\":%s", on < 0 ? "null" : on ? "true" : "false");
     if (pct >= 0) sb_printf(sb, ",\"brightness\":{\"value\":%d,\"unit\":\"percent\",\"available\":true}", pct);
     else sb_puts(sb, ",\"brightness\":{\"value\":null,\"unit\":\"percent\",\"available\":false}");
@@ -432,6 +432,10 @@ static void app_on_reply(void *ctx, const struct http_request *req, const struct
 static int mqtt_set_brightness(void *ctx, long value, int percent) {
     return panel_set_brightness(ctx, value, percent) == PANEL_OK ? 0 : -1;
 }
+static void mqtt_display(void *ctx, int *on, int *percent) {
+    const struct panel *p = ctx;
+    backlight_state(&p->bl, on, percent);
+}
 static int mqtt_blank(void *ctx) { return panel_blank(ctx) == PANEL_OK ? 0 : -1; }
 static int mqtt_wake(void *ctx) { return panel_wake(ctx) == PANEL_OK ? 0 : -1; }
 static int mqtt_reboot(void *ctx) { return panel_reboot(ctx) == PANEL_OK ? 0 : -1; }
@@ -530,7 +534,7 @@ int main(int argc, char **argv) {
     /* MQTT after the display is up: a broker problem never delays the screen.
      * cmd/reboot stays refused unless allow_reboot_cmd is set (mqtt.c). */
     struct mqtt_actions actions = {.ctx = &a.panel, .set_brightness = mqtt_set_brightness, .wake = mqtt_wake,
-                                   .blank = mqtt_blank, .reboot = mqtt_reboot};
+                                   .blank = mqtt_blank, .reboot = mqtt_reboot, .display = mqtt_display};
     if (mqtt_app_init(&a.mqtt, a.cfg.data_dir, a.cfg.sysfs_root, a.device_id, FIRMWARE_VERSION " (" TT7D_VERSION ")",
                       &a.frames, &actions, a.cfg.mqtt_flags, a.cfg.n_mqtt_flags, err, sizeof err) != 0) {
         fprintf(stderr, "tt7d: %s\n", err);

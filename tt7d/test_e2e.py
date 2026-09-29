@@ -599,7 +599,7 @@ def test_hardware(d):
     assert hw["display"] == {"device": d.fb, "native": {"width": 800, "height": 1280, "format": "rgb565",
                                                          "stride": 1600, "bits_per_pixel": 16},
                              "rotation": 90, "logical": {"width": 1280, "height": 800},
-                             "blank_method": "backlight"}, hw["display"]
+                             "blank_method": "bl_power"}, hw["display"]
     inputs = {i["name"]: i for i in hw["input"]}
     assert inputs["rk29-keypad"]["device"] == "/dev/input/event0" and inputs["rk29-keypad"]["role"] == "buttons"
     assert inputs["rk29-keypad"]["keys"] == ["volume_down", "volume_up", "power", "wakeup"], inputs
@@ -652,34 +652,74 @@ def test_brightness(d):
     check_error(d.api("PUT", path, body=b'{"value": "high"}'), 400, "invalid_brightness")
     check_error(d.api("PUT", path, body=b""), 400, "invalid_brightness")
     assert d.bl("brightness") == "128", "a refused PUT changed the backlight"
+    # 0 never reaches the file: rk28_bl treats brightness 0 as full bright. It becomes 1.
+    doc = jbody(*d.api("PUT", path, {"value": 0})[::2], 200)
+    assert d.bl("brightness") == "1" and doc["brightness_raw"] == 1 and doc["on"] is True, doc
+    jbody(*d.api("PUT", path, {"value": 0, "unit": "percent"})[::2], 200)
+    assert d.bl("brightness") == "1"
+    jbody(*d.api("PUT", path, {"value": 255})[::2], 200)
+    assert d.bl("brightness") == "255"
     status, headers, body = d.api("GET", path)
     assert jbody(status, body, 405)["error"] == "method_not_allowed" and headers["allow"] == "PUT"
 
 
 def test_blank_and_wake(d):
+    """Blank with bl_power=4 (FB_BLANK_POWERDOWN), never brightness 0: on the TT7's rk28_bl, 0 is bright."""
     jbody(*d.api("PUT", "/api/v1/display/brightness", {"value": 180})[::2], 200)
     check_error(d.api("POST", "/api/v1/display/blank", token=False), 401, "unauthorized")
-    assert d.bl("brightness") == "180"
+    assert d.bl("brightness") == "180" and d.bl("bl_power") == "0"
 
     doc = jbody(*d.api("POST", "/api/v1/display/blank")[::2], 200)
-    assert d.bl("brightness") == "0" and doc["on"] is False and doc["wake_brightness_raw"] == 180, doc
+    assert d.bl("bl_power") == "4" and d.bl("brightness") == "180", (d.bl("bl_power"), d.bl("brightness"))
+    assert doc["on"] is False and doc["wake_brightness_raw"] == 180 and doc["blank_method"] == "bl_power", doc
     doc = jbody(*d.api("POST", "/api/v1/display/blank")[::2], 200)  # idempotent: keeps the level to wake to
-    assert d.bl("brightness") == "0" and doc["wake_brightness_raw"] == 180, doc
+    assert d.bl("bl_power") == "4" and d.bl("brightness") == "180" and doc["wake_brightness_raw"] == 180, doc
     state = jbody(*d.request("GET", "/api/v1/state")[::2], 200)
-    assert state["display"]["on"] is False, state["display"]
+    assert state["display"]["on"] is False and state["display"]["brightness"]["value"] == 71, state["display"]
+
+    # A brightness set while blank is stored for wake; the screen stays dark.
+    doc = jbody(*d.api("PUT", "/api/v1/display/brightness", {"value": 50, "unit": "percent"})[::2], 200)
+    assert d.bl("bl_power") == "4" and d.bl("brightness") == "180", (d.bl("bl_power"), d.bl("brightness"))
+    assert doc["on"] is False and doc["wake_brightness_raw"] == 128, doc
+    assert doc["brightness"] == {"value": 50, "unit": "percent", "available": True}, doc
+    state = jbody(*d.request("GET", "/api/v1/state")[::2], 200)
+    assert state["display"]["on"] is False and state["display"]["brightness"]["value"] == 50, state["display"]
 
     check_error(d.api("POST", "/api/v1/display/wake", token=False), 401, "unauthorized")
-    assert d.bl("brightness") == "0"
+    assert d.bl("bl_power") == "4"
     doc = jbody(*d.api("POST", "/api/v1/display/wake")[::2], 200)
-    assert d.bl("brightness") == "180" and doc["on"] is True, doc
+    assert d.bl("bl_power") == "0" and d.bl("brightness") == "128" and doc["on"] is True, doc
     jbody(*d.api("POST", "/api/v1/display/wake")[::2], 200)  # already awake: no change
-    assert d.bl("brightness") == "180"
+    assert d.bl("bl_power") == "0" and d.bl("brightness") == "128"
 
     # Something else powered the backlight down: wake turns bl_power back on.
     with open(os.path.join(d.backlight, "bl_power"), "w") as f:
         f.write("4\n")
     doc = jbody(*d.api("POST", "/api/v1/display/wake")[::2], 200)
-    assert d.bl("bl_power") == "0" and d.bl("brightness") == "180" and doc["on"] is True, doc
+    assert d.bl("bl_power") == "0" and d.bl("brightness") == "128" and doc["on"] is True, doc
+
+
+def test_blank_without_bl_power(binary, workdir):
+    """A backlight with no bl_power file (not the TT7): blank falls back to brightness 0."""
+    rd = os.path.join(workdir, "no-bl-power")
+    os.makedirs(rd)
+    d = Daemon(binary, rd, ["--fallback-timeout", "0", "--ntp-marker", os.path.join(rd, "ntp-synced")])
+    os.remove(os.path.join(d.backlight, "bl_power"))
+    try:
+        d.start()
+        hw = jbody(*d.request("GET", "/api/v1/hardware")[::2], 200)
+        assert hw["display"]["blank_method"] == "brightness", hw["display"]
+        jbody(*d.api("PUT", "/api/v1/display/brightness", {"value": 180})[::2], 200)
+        doc = jbody(*d.api("POST", "/api/v1/display/blank")[::2], 200)
+        assert d.bl("brightness") == "0" and doc["on"] is False and doc["blank_method"] == "brightness", doc
+        assert doc["wake_brightness_raw"] == 180, doc
+        doc = jbody(*d.api("PUT", "/api/v1/display/brightness", {"value": 90})[::2], 200)
+        assert d.bl("brightness") == "0" and doc["on"] is False and doc["wake_brightness_raw"] == 90, doc
+        doc = jbody(*d.api("POST", "/api/v1/display/wake")[::2], 200)
+        assert d.bl("brightness") == "90" and doc["on"] is True, doc
+        assert not os.path.exists(os.path.join(d.backlight, "bl_power")), "tt7d created bl_power"
+    finally:
+        d.stop()
 
 
 def test_test_pattern(d):
@@ -835,6 +875,12 @@ def main():
             print(f"FAIL test_e2e: default rotation: {type(e).__name__}: {e}", file=sys.stderr)
             return 1
         steps.append("default rotation is 270 (upright on the TT7)")
+        try:
+            test_blank_without_bl_power(binary, workdir)
+        except Exception as e:  # noqa: BLE001
+            print(f"FAIL test_e2e: blank without bl_power: {type(e).__name__}: {e}", file=sys.stderr)
+            return 1
+        steps.append("blank without bl_power falls back to brightness 0")
         for s in steps:
             print(f"  ok   e2e: {s}")
     return 0
