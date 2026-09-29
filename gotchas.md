@@ -199,3 +199,4 @@
   - `media_player.active_media` is a MIRROR written by the active_media app (set_state), so service calls must target the real player (`media_player.kitchen`).
   - HA's media proxy returns 404 for tracks with no art. The `media_or_photo` widget falls back to photos when the art fails to load.
 - **Clocks rendered in tt7-server's Chrome use the CONTAINER's time zone.** The Docker container defaulted to UTC, so the wall showed 1:30 AM instead of 8:30 PM. compose.yaml now sets `TZ=${TT7_TZ:-America/Chicago}`.
+- **Blanking on rk28_bl (verified on the wall, 2026-09-28):** `brightness=0` makes the screen SUPER BRIGHT (the driver treats 0 specially; brightness is also nonlinear: 13 reads back as actual 19). `bl_power=4` turns the backlight fully off, and `bl_power=0` brings it back at the previous level. The tt7d fix (blank via bl_power, clamp brightness 0 → 1) is on branch `fix-blank-blpower`.
