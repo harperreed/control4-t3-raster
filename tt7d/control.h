@@ -17,7 +17,9 @@ int brightness_parse(const char *body, size_t len, long *value, int *percent);
 
 /* The raw backlight level for a parsed value, or -1 if it is out of range
  * (raw: 0..max; percent: 0..100) or max is unknown (<= 0). Percent rounds to
- * the nearest raw level. */
+ * the nearest raw level. A result of 0 becomes 1, the dimmest level: the
+ * TT7's rk28_bl driver treats brightness 0 as a fallback to full bright, so
+ * 0 must never reach it. Turning the screen off is blank's job (backlight.h). */
 long brightness_to_raw(long value, int percent, long max);
 
 /* Offset in buf[0..len) where its last n lines start (a final newline does

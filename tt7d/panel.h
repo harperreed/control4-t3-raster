@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "backlight.h"
 #include "display.h"
 #include "frame.h"
 #include "http.h"
@@ -22,10 +23,11 @@ struct panel {
     const char *firmware_version, *build;
     struct display *disp;
     struct frame_store *frames;
-    long wake_level; /* raw backlight level that wake restores; -1 until one is seen */
+    struct backlight bl; /* set up by panel_init */
 };
 
-/* Remember the current brightness as the level to wake to. */
+/* Find the backlight and its blank method (bl_power, or brightness 0 without
+ * it), and remember the current brightness as the level to wake to. */
 void panel_init(struct panel *p);
 
 /* Head-time routing for the panel's paths. Returns PANEL_NOT_MINE for any
@@ -46,13 +48,15 @@ enum panel_result {
 };
 
 /* value is a percentage (0-100) if percent, else a raw backlight level
- * (0..max_brightness). A non-zero level also becomes the level wake restores. */
+ * (0..max_brightness). A resulting 0 becomes 1 (brightness_to_raw). The level
+ * is also what wake restores; while blank it is only stored, and the screen
+ * stays dark until wake. */
 int panel_set_brightness(struct panel *p, long value, int percent);
 
-/* Backlight to 0, remembering the level for wake. */
+/* Backlight off (bl_power 4, or brightness 0 without bl_power), remembering the level for wake. */
 int panel_blank(struct panel *p);
 
-/* bl_power on, and the remembered level if the backlight is at 0. */
+/* Backlight on at the remembered level. */
 int panel_wake(struct panel *p);
 
 /* Run reboot_cmd from a detached process after REBOOT_DELAY_S seconds. */

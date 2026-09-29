@@ -77,7 +77,8 @@ int brightness_parse(const char *body, size_t len, long *value, int *percent) {
 
 long brightness_to_raw(long value, int percent, long max) {
     if (max <= 0 || value < 0 || value > (percent ? 100 : max)) return -1;
-    return percent ? (value * max + 50) / 100 : value;
+    long raw = percent ? (value * max + 50) / 100 : value;
+    return raw > 0 ? raw : 1; /* 0 would light rk28_bl up, not dim it (control.h) */
 }
 
 size_t tail_start(const char *buf, size_t len, unsigned n) {

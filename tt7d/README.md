@@ -98,21 +98,27 @@ already visible on the glass. Revisit this when the panel shows anything private
 | `PATCH /frame` | Body: a region container (SPEC §10.1), `Content-Type: application/x-tt7-regions`. Headers: `X-Base-Frame-ID` (required: the frame it applies to), `X-Frame-ID`, `X-Frame-SHA256` (the resulting frame's, checked if present), `X-Persist` (only false). All regions or none; 409 `base_mismatch` unless the base is on screen. Replies 200 with the frame metadata |
 | `POST /heartbeat` | Needs the token; send `Content-Length: 0` (`curl -d ''`). Restarts the fallback timer and replies `{"fallback": {...}}` as in `/state`. It keeps a server frame up; during the fallback it changes nothing on screen |
 
-Control panel endpoints (`panel.c`):
+Control panel endpoints (`panel.c`; the backlight itself is `backlight.c`):
 
 | Endpoint | Auth | Does |
 |---|---|---|
 | `GET /hardware` | – | SPEC §20 mappings: `display` (device, native format and stride, rotation, logical size, `blank_method`), `input` (sysfs node, `/dev/input/eventN`, name, `role` touchscreen/buttons/other, known `keys`, `modalias`), `backlight` and `power_supplies` (allowlisted sysfs attributes as raw strings, `null` if missing), `thermal_zones`, `network_interfaces` (operstate, MAC, IPv4), `audio` (`cards` from `/proc/asound/cards`, `null` if unreadable; `devices` from sysfs), `video_devices` |
 | `GET /system` | – | `firmware_version`, `build`, `kernel` (uname), `uptime_s`, `memory` {`total`, `free`, `available`} in kibibytes from `/proc/meminfo` (`available` is null on 3.0), `storage` for the data dir in bytes, `time` {`now`, `plausible` (false before 2024: the clock was never set), `timezone`, `synchronized` (true once tt7-ntp-hook wrote its marker this boot)} |
 | `GET /logs?lines=N` | token | The last N (1–2000, default 200) lines of `--log-file` and of the kernel log (`klogctl`). Non-ASCII bytes become `?`. `kernel.available` is false with an `error` when klogctl is refused |
-| `PUT /display/brightness` | token | Body `{"value": N}` (raw, 0..max_brightness) or `{"value": N, "unit": "percent"}` (0..100). Writes the first backlight's `brightness` |
-| `POST /display/blank` | token | Remembers the current level and writes brightness 0. Idempotent |
-| `POST /display/wake` | token | Sets `bl_power` back to 0 if it isn't, and restores the remembered level if brightness is 0 (max_brightness if tt7d never saw a level, as tt7-app does) |
+| `PUT /display/brightness` | token | Body `{"value": N}` (raw, 0..max_brightness) or `{"value": N, "unit": "percent"}` (0..100). Writes the first backlight's `brightness`. A 0 (raw, or a percent that rounds to 0) is written as 1: the TT7's `rk28_bl` driver treats brightness 0 as a fallback to full bright. While blank the level is only stored: the screen stays dark and wake applies it |
+| `POST /display/blank` | token | Remembers the current level and writes `bl_power` 4 (FB_BLANK_POWERDOWN), leaving `brightness` alone. A backlight without `bl_power` (not the TT7) falls back to writing brightness 0. Idempotent |
+| `POST /display/wake` | token | Writes the remembered level to `brightness` if it differs (a level set while blank, or max_brightness if tt7d never saw one, as tt7-app does), then `bl_power` 0. Without `bl_power`: the level, if brightness is 0. Awake already: no change |
 | `POST /display/test-pattern` | token | Shows the built-in pattern (`tools/make-test-frame.py` output, embedded at build time) through the same decode-and-present path as `PUT /frame`, not persisted. It becomes the current frame with id `test-pattern-<16 hex>`, so the preview shows it, and counts in `frames.accepted` |
 | `POST /system/reboot` | token | Syncs, replies `202 {"rebooting": true, "delay": {"value": 1, "unit": "second"}}`, and a detached grandchild runs `--reboot-cmd` (default `reboot -f`) through `/bin/sh -c` one second later |
 
 The brightness, blank and wake replies all share one shape:
-`{"on", "brightness": {value, unit: "percent", available}, "brightness_raw", "max_brightness", "wake_brightness_raw", "blank_method": "backlight"}`.
+`{"on", "brightness": {value, unit: "percent", available}, "brightness_raw", "max_brightness", "wake_brightness_raw", "blank_method"}`.
+`blank_method` is `"bl_power"`, or `"brightness"` for a backlight without a
+`bl_power` file; tt7d decides at startup. `on` is false while `bl_power` is
+non-zero (or brightness is 0). `brightness` is the stored level while blank
+(what wake restores), so it matches `wake_brightness_raw`; `brightness_raw`
+is always the sysfs file. `/state` and MQTT `state` report `on` and
+`brightness` the same way.
 
 ```sh
 T=$(cat ~/.config/tt7/token); P=<panel-ip>
@@ -628,7 +634,7 @@ Base: `<prefix>/<device id>`, e.g. `tt7/tt7-7f38a2`.
 | `event/frame` | no | `{"type":"frame","frame_id":"…","sha256":"…","deduplicated":false,"timestamp":"…"}` for each accepted `PUT /frame` |
 | `event/error` | no | `{"type":"error","error":"command_disabled","command":"reboot","message":"…","timestamp":"…"}` |
 | `event/button` | no | The same JSON as the WebSocket's button events (see "Input (M3)"), e.g. `{"type":"button","button":"power","action":"press","code":116,…}`. Touch stays off MQTT (the owner chose a WebSocket for it) |
-| `cmd/brightness` | (in) | `NN%` (0-100), or a raw level `NN` (0 to `max_brightness`, which is 255 here), written as is |
+| `cmd/brightness` | (in) | `NN%` (0-100), or a raw level `NN` (0 to `max_brightness`, which is 255 here), written as is, except that 0 becomes 1 and a level sent while blank waits for wake (as `PUT /display/brightness`) |
 | `cmd/wake`, `cmd/blank` | (in) | anything; the same backlight actions as `POST /display/wake` and `/display/blank` |
 | `cmd/reboot` | (in) | anything; refused with `command_disabled` unless `allow_reboot_cmd=true`, else runs `--reboot-cmd` as `POST /system/reboot` does |
 
@@ -745,7 +751,7 @@ panel (gotchas.md). **It is off by default.**
   camera module (the server's `take_over` hook, as the WebSocket does) and is
   answered when the JPEG arrives. At most 4 requests wait at once.
 - **Presence and the display** (`presence.c`). On arrival, with
-  `presence_wake` on and the backlight at 0, presence calls the same
+  `presence_wake` on and the display blank, presence calls the same
   `panel_wake` as `POST /display/wake`. With `presence_idle_blank_s` > 0 it
   blanks again that many seconds after presence ends, but only a display
   that presence itself woke. A display someone woke or blanked by hand in
@@ -1144,13 +1150,16 @@ curl -s http://<panel-ip>/api/v1/state | python3 -m json.tool | grep -A10 '"mqtt
   host build (unit tests, e2e, and one headless Chromium session through
   agent-browser: no console or CSP errors, unlock, test pattern, blank, wake,
   brightness, reboot confirm, no horizontal scroll at 390 px wide).
-- Blank/wake on the glass. Discovery (`boot-0004-up22s`) shows both
-  `/sys/class/graphics/fb0/blank` (write-only, empty on read) and
-  `rk28_bl` with `bl_power`. tt7d blanks by writing backlight brightness 0,
-  because it is reversible and `/state` already reads it. Whether
-  brightness 0 really turns the rk28_bl backlight fully dark, and what the
-  fb blank ioctl does on this LCD controller, nobody has checked. Note that
-  discovery read `brightness` 127 but `actual_brightness` 67.
+- Blank/wake on the glass: measured on the wall panel (2026-09-28).
+  Writing `brightness` 0 to `rk28_bl` does NOT blank: the screen goes super
+  bright (the driver treats 0 specially). `bl_power` 4 turns the backlight
+  fully off and `bl_power` 0 brings it back at the previous level, so tt7d
+  blanks with `bl_power` and never writes brightness 0. The scale is not
+  linear either: writing 13 reads back `actual_brightness` 19. Still
+  unchecked: whether writing `brightness` while `bl_power` is 4 lights the
+  screen (tt7d never does it; a level set while blank waits for wake), and
+  what the fb blank ioctl (`/sys/class/graphics/fb0/blank`) does on this LCD
+  controller.
 - `reboot -f` from tt7d's detached child on the panel (the same command as
   the working ssh `nohup reboot -f &`, but not yet run from tt7d).
 - `klogctl` on the panel: tt7d runs as root there, so it should work; on
